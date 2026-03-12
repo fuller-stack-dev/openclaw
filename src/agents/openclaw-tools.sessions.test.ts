@@ -120,6 +120,10 @@ describe("sessions tools", () => {
               updatedAt: 11,
               channel: "discord",
               displayName: "discord:g-dev",
+              status: "running",
+              startedAt: 100,
+              runtimeMs: 42,
+              childSessions: ["agent:main:subagent:worker"],
             },
             {
               key: "cron:job-1",
@@ -157,6 +161,10 @@ describe("sessions tools", () => {
       sessions?: Array<{
         key?: string;
         channel?: string;
+        status?: string;
+        startedAt?: number;
+        runtimeMs?: number;
+        childSessions?: string[];
         messages?: Array<{ role?: string }>;
       }>;
     };
@@ -165,6 +173,12 @@ describe("sessions tools", () => {
     expect(main?.channel).toBe("whatsapp");
     expect(main?.messages?.length).toBe(1);
     expect(main?.messages?.[0]?.role).toBe("assistant");
+
+    const group = details.sessions?.find((s) => s.key === "discord:group:dev");
+    expect(group?.status).toBe("running");
+    expect(group?.startedAt).toBe(100);
+    expect(group?.runtimeMs).toBe(42);
+    expect(group?.childSessions).toEqual(["agent:main:subagent:worker"]);
 
     const cronOnly = await tool.execute("call2", { kinds: ["cron"] });
     const cronDetails = cronOnly.details as {
