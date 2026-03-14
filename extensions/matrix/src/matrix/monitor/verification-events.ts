@@ -310,6 +310,7 @@ export function createMatrixVerificationEventRouter(params: {
   const routedVerificationSasFingerprints = new Set<string>();
   const routedVerificationStageNotices = new Set<string>();
   const verificationFlowRooms = new Map<string, string>();
+  const verificationUserRooms = new Map<string, string>();
 
   function rememberVerificationRoom(roomId: string, event: MatrixRawEvent, flowId: string | null) {
     for (const candidate of resolveVerificationFlowCandidates({ event, flowId })) {
@@ -319,6 +320,22 @@ export function createMatrixVerificationEventRouter(params: {
         if (typeof oldest === "string") {
           verificationFlowRooms.delete(oldest);
         }
+      }
+    }
+  }
+
+  function rememberVerificationUserRoom(remoteUserId: string, roomId: string): void {
+    const normalizedUserId = trimMaybeString(remoteUserId);
+    const normalizedRoomId = trimMaybeString(roomId);
+    if (!normalizedUserId || !normalizedRoomId) {
+      return;
+    }
+    verificationUserRooms.delete(normalizedUserId);
+    verificationUserRooms.set(normalizedUserId, normalizedRoomId);
+    if (verificationUserRooms.size > MAX_TRACKED_VERIFICATION_EVENTS) {
+      const oldest = verificationUserRooms.keys().next().value;
+      if (typeof oldest === "string") {
+        verificationUserRooms.delete(oldest);
       }
     }
   }
@@ -339,6 +356,17 @@ export function createMatrixVerificationEventRouter(params: {
     const remoteUserId = trimMaybeString(summary.otherUserId);
     if (!remoteUserId) {
       return null;
+    }
+    const recentRoomId = trimMaybeString(verificationUserRooms.get(remoteUserId));
+    if (
+      recentRoomId &&
+      (await isStrictDirectRoom({
+        client: params.client,
+        roomId: recentRoomId,
+        remoteUserId,
+      }))
+    ) {
+      return recentRoomId;
     }
     const inspection = await inspectMatrixDirectRooms({
       client: params.client,
@@ -406,6 +434,7 @@ export function createMatrixVerificationEventRouter(params: {
         );
         return;
       }
+      rememberVerificationUserRoom(senderId, roomId);
       if (!trackBounded(routedVerificationEvents, sourceFingerprint)) {
         return;
       }

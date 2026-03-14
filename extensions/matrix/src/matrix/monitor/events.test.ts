@@ -391,6 +391,74 @@ describe("registerMatrixMonitorEvents verification routing", () => {
     expect(body).toContain("SAS decimal: 4321 8765 2109");
   });
 
+  it("prefers the most recent verification DM over the canonical active DM for unmapped SAS summaries", async () => {
+    const { sendMessage, roomEventListener, verificationSummaryListener } = createHarness({
+      joinedMembersByRoom: {
+        "!dm-active:example.org": ["@alice:example.org", "@bot:example.org"],
+        "!dm-current:example.org": ["@alice:example.org", "@bot:example.org"],
+      },
+    });
+    if (!verificationSummaryListener) {
+      throw new Error("verification.summary listener was not registered");
+    }
+
+    roomEventListener("!dm-current:example.org", {
+      event_id: "$start-current",
+      sender: "@alice:example.org",
+      type: "m.key.verification.start",
+      origin_server_ts: Date.now(),
+      content: {
+        "m.relates_to": { event_id: "$req-current" },
+      },
+    });
+
+    await vi.waitFor(() => {
+      const bodies = (sendMessage.mock.calls as unknown[][]).map((call) =>
+        String((call[1] as { body?: string } | undefined)?.body ?? ""),
+      );
+      expect(bodies.some((body) => body.includes("Matrix verification started with"))).toBe(true);
+    });
+
+    verificationSummaryListener({
+      id: "verification-current-room",
+      otherUserId: "@alice:example.org",
+      isSelfVerification: false,
+      initiatedByMe: false,
+      phase: 3,
+      phaseName: "started",
+      pending: true,
+      methods: ["m.sas.v1"],
+      canAccept: false,
+      hasSas: true,
+      sas: {
+        decimal: [2468, 1357, 9753],
+        emoji: [
+          ["🔔", "Bell"],
+          ["📁", "Folder"],
+          ["🐴", "Horse"],
+        ],
+      },
+      hasReciprocateQr: false,
+      completed: false,
+      createdAt: new Date("2026-02-25T21:42:54.000Z").toISOString(),
+      updatedAt: new Date("2026-02-25T21:42:55.000Z").toISOString(),
+    });
+
+    await vi.waitFor(() => {
+      const bodies = (sendMessage.mock.calls as unknown[][]).map((call) =>
+        String((call[1] as { body?: string } | undefined)?.body ?? ""),
+      );
+      expect(bodies.some((body) => body.includes("SAS decimal: 2468 1357 9753"))).toBe(true);
+    });
+    const calls = sendMessage.mock.calls as unknown[][];
+    const sasCall = calls.find((call) =>
+      String((call[1] as { body?: string } | undefined)?.body ?? "").includes(
+        "SAS decimal: 2468 1357 9753",
+      ),
+    );
+    expect((sasCall?.[0] ?? "") as string).toBe("!dm-current:example.org");
+  });
+
   it("retries SAS notice lookup when start arrives before SAS payload is available", async () => {
     vi.useFakeTimers();
     const verifications: Array<{
