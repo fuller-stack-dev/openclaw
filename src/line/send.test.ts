@@ -1,5 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.hoisted(() => {
+  vi.resetModules();
+});
+
 const {
   pushMessageMock,
   replyMessageMock,

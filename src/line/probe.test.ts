@@ -1,4 +1,9 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.hoisted(() => {
+  vi.resetModules();
+});
+
 const { getBotInfoMock, MessagingApiClientMock } = vi.hoisted(() => {
   const getBotInfoMock = vi.fn();
   const MessagingApiClientMock = vi.fn(function () {

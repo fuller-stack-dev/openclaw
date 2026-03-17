@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import type { RuntimeEnv } from "../runtime.js";
 
+vi.hoisted(() => {
+  vi.resetModules();
+});
+
 const { createLineBotMock, registerPluginHttpRouteMock, unregisterHttpMock } = vi.hoisted(() => ({
   createLineBotMock: vi.fn(() => ({
     account: { accountId: "default" },

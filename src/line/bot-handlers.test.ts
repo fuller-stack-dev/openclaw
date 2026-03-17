@@ -2,6 +2,10 @@ import type { MessageEvent, PostbackEvent } from "@line/bot-sdk";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LineAccountConfig } from "./types.js";
 
+vi.hoisted(() => {
+  vi.resetModules();
+});
+
 // Avoid pulling in globals/pairing/media dependencies; this suite only asserts
 // allowlist/groupPolicy gating and message-context wiring.
 vi.mock("../globals.js", () => ({
@@ -206,10 +210,16 @@ describe("handleLineWebhookEvents", () => {
   });
 
   beforeEach(() => {
-    buildLineMessageContextMock.mockClear();
-    buildLinePostbackContextMock.mockClear();
-    readAllowFromStoreMock.mockClear();
-    upsertPairingRequestMock.mockClear();
+    buildLineMessageContextMock.mockReset().mockResolvedValue({
+      ctxPayload: { From: "line:group:group-1" },
+      replyToken: "reply-token",
+      route: { agentId: "default" },
+      isGroup: true,
+      accountId: "default",
+    });
+    buildLinePostbackContextMock.mockReset().mockResolvedValue(null as unknown);
+    readAllowFromStoreMock.mockReset().mockResolvedValue([]);
+    upsertPairingRequestMock.mockReset().mockResolvedValue({ code: "CODE", created: true });
   });
 
   it("blocks group messages when groupPolicy is disabled", async () => {

@@ -46,6 +46,10 @@ import {
   resolveDiscordReplyDeliveryPlan,
 } from "./threading.js";
 
+vi.hoisted(() => {
+  vi.resetModules();
+});
+
 const readAllowFromStoreMock = vi.hoisted(() => vi.fn());
 const upsertPairingRequestMock = vi.hoisted(() => vi.fn());
 const enqueueSystemEventMock = vi.hoisted(() => vi.fn());
@@ -59,45 +63,12 @@ const resolvePluginConversationBindingApprovalMock = vi.hoisted(() => vi.fn());
 const buildPluginBindingResolvedTextMock = vi.hoisted(() => vi.fn());
 let lastDispatchCtx: Record<string, unknown> | undefined;
 
-vi.mock("../../../../src/pairing/pairing-store.js", () => ({
-  readChannelAllowFromStore: (...args: unknown[]) => readAllowFromStoreMock(...args),
-  upsertChannelPairingRequest: (...args: unknown[]) => upsertPairingRequestMock(...args),
-}));
-
-vi.mock("../../../../src/infra/system-events.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../../src/infra/system-events.js")>();
+vi.mock("openclaw/plugin-sdk/conversation-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/conversation-runtime")>();
   return {
     ...actual,
-    enqueueSystemEvent: (...args: unknown[]) => enqueueSystemEventMock(...args),
-  };
-});
-
-vi.mock("../../../../src/auto-reply/reply/provider-dispatcher.js", () => ({
-  dispatchReplyWithBufferedBlockDispatcher: (...args: unknown[]) => dispatchReplyMock(...args),
-}));
-
-vi.mock("./reply-delivery.js", () => ({
-  deliverDiscordReply: (...args: unknown[]) => deliverDiscordReplyMock(...args),
-}));
-
-vi.mock("../../../../src/channels/session.js", () => ({
-  recordInboundSession: (...args: unknown[]) => recordInboundSessionMock(...args),
-}));
-
-vi.mock("../../../../src/config/sessions.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../../src/config/sessions.js")>();
-  return {
-    ...actual,
-    readSessionUpdatedAt: (...args: unknown[]) => readSessionUpdatedAtMock(...args),
-    resolveStorePath: (...args: unknown[]) => resolveStorePathMock(...args),
-  };
-});
-
-vi.mock("../../../../src/plugins/conversation-binding.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../../../../src/plugins/conversation-binding.js")>();
-  return {
-    ...actual,
+    readChannelAllowFromStore: (...args: unknown[]) => readAllowFromStoreMock(...args),
+    upsertChannelPairingRequest: (...args: unknown[]) => upsertPairingRequestMock(...args),
     resolvePluginConversationBindingApproval: (...args: unknown[]) =>
       resolvePluginConversationBindingApprovalMock(...args),
     buildPluginBindingResolvedText: (...args: unknown[]) =>
@@ -105,8 +76,45 @@ vi.mock("../../../../src/plugins/conversation-binding.js", async (importOriginal
   };
 });
 
-vi.mock("../../../../src/plugins/interactive.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../../src/plugins/interactive.js")>();
+vi.mock("./reply-delivery.js", () => ({
+  deliverDiscordReply: (...args: unknown[]) => deliverDiscordReplyMock(...args),
+}));
+
+vi.mock("openclaw/plugin-sdk/infra-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/infra-runtime")>();
+  return {
+    ...actual,
+    enqueueSystemEvent: (...args: unknown[]) => enqueueSystemEventMock(...args),
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/reply-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/reply-runtime")>();
+  return {
+    ...actual,
+    dispatchReplyWithBufferedBlockDispatcher: (...args: unknown[]) => dispatchReplyMock(...args),
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/channel-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/channel-runtime")>();
+  return {
+    ...actual,
+    recordInboundSession: (...args: unknown[]) => recordInboundSessionMock(...args),
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/config-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/config-runtime")>();
+  return {
+    ...actual,
+    readSessionUpdatedAt: (...args: unknown[]) => readSessionUpdatedAtMock(...args),
+    resolveStorePath: (...args: unknown[]) => resolveStorePathMock(...args),
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/plugin-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/plugin-runtime")>();
   return {
     ...actual,
     dispatchPluginInteractiveHandler: (...args: unknown[]) =>

@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../../../src/config/config.js";
 import type { ThreadBindingRecord } from "./thread-bindings.types.js";
 
+vi.hoisted(() => {
+  vi.resetModules();
+});
+
 const hoisted = vi.hoisted(() => {
   const restGet = vi.fn();
   const sendMessageDiscord = vi.fn();
