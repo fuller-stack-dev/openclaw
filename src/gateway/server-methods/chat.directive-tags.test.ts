@@ -22,6 +22,7 @@ const mockState = vi.hoisted(() => ({
   agentRunId: "run-agent-1",
   sessionEntry: {} as Record<string, unknown>,
   lastDispatchCtx: undefined as MsgContext | undefined,
+  lastDispatchImages: undefined as Array<{ mimeType: string; data: string }> | undefined,
   emittedTranscriptUpdates: [] as Array<{
     sessionFile: string;
     sessionKey?: string;
@@ -76,9 +77,11 @@ vi.mock("../../auto-reply/dispatch.js", () => ({
       };
       replyOptions?: {
         onAgentRunStart?: (runId: string) => void;
+        images?: Array<{ mimeType: string; data: string }>;
       };
     }) => {
       mockState.lastDispatchCtx = params.ctx;
+      mockState.lastDispatchImages = params.replyOptions?.images;
       if (mockState.triggerAgentRunStart) {
         params.replyOptions?.onAgentRunStart?.(mockState.agentRunId);
       }
@@ -169,6 +172,34 @@ function createTranscriptFixture(prefix: string) {
     "utf-8",
   );
   mockState.transcriptPath = transcriptPath;
+}
+
+function appendTranscriptMessage(params: {
+  id: string;
+  parentId: string | null;
+  message: Record<string, unknown>;
+}) {
+  fs.appendFileSync(
+    mockState.transcriptPath,
+    `${JSON.stringify({
+      type: "message",
+      id: params.id,
+      parentId: params.parentId,
+      timestamp: new Date(0).toISOString(),
+      message: params.message,
+    })}\n`,
+    "utf-8",
+  );
+}
+
+function readTranscriptMessages() {
+  return fs
+    .readFileSync(mockState.transcriptPath, "utf-8")
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as { type?: string; message?: Record<string, unknown> })
+    .filter((entry) => entry.type === "message")
+    .map((entry) => entry.message ?? {});
 }
 
 function extractFirstTextBlock(payload: unknown): string | undefined {
@@ -294,6 +325,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.agentRunId = "run-agent-1";
     mockState.sessionEntry = {};
     mockState.lastDispatchCtx = undefined;
+    mockState.lastDispatchImages = undefined;
     mockState.emittedTranscriptUpdates = [];
     mockState.savedMediaResults = [];
     mockState.savedMediaCalls = [];
@@ -1192,13 +1224,68 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       ]);
       expect(message?.MediaType).toBe("image/png");
       expect(message?.MediaTypes).toEqual(["image/png", "image/jpeg"]);
-      expect(mockState.lastDispatchCtx?.MediaPath).toBe("/tmp/chat-send-image-a.png");
-      expect(mockState.lastDispatchCtx?.MediaPaths).toEqual([
-        "/tmp/chat-send-image-a.png",
-        "/tmp/chat-send-image-b.jpg",
-      ]);
-      expect(mockState.lastDispatchCtx?.MediaType).toBe("image/png");
-      expect(mockState.lastDispatchCtx?.MediaTypes).toEqual(["image/png", "image/jpeg"]);
+      expect(mockState.lastDispatchCtx?.MediaPath).toBeUndefined();
+      expect(mockState.lastDispatchCtx?.MediaPaths).toBeUndefined();
+      expect(mockState.lastDispatchImages).toHaveLength(2);
+    });
+  });
+
+  it("rewrites the persisted user turn with saved media paths after dispatch", async () => {
+    createTranscriptFixture("openclaw-chat-send-user-transcript-rewrite-");
+    appendTranscriptMessage({
+      id: "msg-user-1",
+      parentId: null,
+      message: {
+        role: "user",
+        content: "edit these",
+        timestamp: Date.now(),
+      },
+    });
+    appendTranscriptMessage({
+      id: "msg-assistant-1",
+      parentId: "msg-user-1",
+      message: {
+        role: "assistant",
+        content: "old reply",
+        timestamp: Date.now(),
+      },
+    });
+    mockState.finalText = "ok";
+    mockState.savedMediaResults = [
+      { path: "/tmp/chat-send-image-a.png", contentType: "image/png" },
+    ];
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-user-transcript-rewrite",
+      message: "edit these",
+      requestParams: {
+        attachments: [
+          {
+            mimeType: "image/png",
+            content:
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aYoYAAAAASUVORK5CYII=",
+          },
+        ],
+      },
+      expectBroadcast: false,
+    });
+
+    await waitForAssertion(() => {
+      const lastUser = [...readTranscriptMessages()]
+        .toReversed()
+        .find((message) => message.role === "user" && message.content === "edit these");
+      expect(lastUser).toMatchObject({
+        role: "user",
+        content: "edit these",
+        MediaPath: "/tmp/chat-send-image-a.png",
+        MediaPaths: ["/tmp/chat-send-image-a.png"],
+        MediaType: "image/png",
+        MediaTypes: ["image/png"],
+      });
     });
   });
 

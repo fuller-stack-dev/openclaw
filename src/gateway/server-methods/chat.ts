@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
+import { CURRENT_SESSION_VERSION, SessionManager } from "@mariozechner/pi-coding-agent";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
+import { rewriteTranscriptEntriesInSessionFile } from "../../agents/pi-embedded-runner/transcript-rewrite.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
@@ -314,23 +315,93 @@ function buildChatSendTranscriptMessage(params: {
   savedImages: SavedMedia[];
   timestamp: number;
 }) {
-  const mediaPaths = params.savedImages.map((entry) => entry.path);
-  const mediaTypes = params.savedImages.map(
-    (entry) => entry.contentType ?? "application/octet-stream",
-  );
+  const mediaFields = resolveChatSendTranscriptMediaFields(params.savedImages);
   return {
     role: "user" as const,
     content: params.message,
     timestamp: params.timestamp,
-    ...(mediaPaths.length > 0
-      ? {
-          MediaPath: mediaPaths[0],
-          MediaPaths: mediaPaths,
-          MediaType: mediaTypes[0],
-          MediaTypes: mediaTypes,
-        }
-      : {}),
+    ...mediaFields,
   };
+}
+
+function resolveChatSendTranscriptMediaFields(savedImages: SavedMedia[]) {
+  const mediaPaths = savedImages.map((entry) => entry.path);
+  if (mediaPaths.length === 0) {
+    return {};
+  }
+  const mediaTypes = savedImages.map((entry) => entry.contentType ?? "application/octet-stream");
+  return {
+    MediaPath: mediaPaths[0],
+    MediaPaths: mediaPaths,
+    MediaType: mediaTypes[0],
+    MediaTypes: mediaTypes,
+  };
+}
+
+function extractTranscriptUserText(content: unknown): string | undefined {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  const textBlocks = content
+    .map((block) =>
+      block && typeof block === "object" && "text" in block ? block.text : undefined,
+    )
+    .filter((text): text is string => typeof text === "string");
+  return textBlocks.length > 0 ? textBlocks.join("") : undefined;
+}
+
+async function rewriteChatSendUserTurnMediaPaths(params: {
+  transcriptPath: string;
+  sessionKey: string;
+  message: string;
+  savedImages: SavedMedia[];
+}) {
+  const mediaFields = resolveChatSendTranscriptMediaFields(params.savedImages);
+  if (!("MediaPath" in mediaFields)) {
+    return;
+  }
+  const sessionManager = SessionManager.open(params.transcriptPath);
+  const branch = sessionManager.getBranch();
+  const target = [...branch].toReversed().find((entry) => {
+    if (entry.type !== "message" || entry.message.role !== "user") {
+      return false;
+    }
+    const existingPaths = Array.isArray((entry.message as { MediaPaths?: unknown }).MediaPaths)
+      ? (entry.message as { MediaPaths?: unknown[] }).MediaPaths
+      : undefined;
+    if (
+      (typeof (entry.message as { MediaPath?: unknown }).MediaPath === "string" &&
+        (entry.message as { MediaPath?: string }).MediaPath) ||
+      (existingPaths && existingPaths.length > 0)
+    ) {
+      return false;
+    }
+    return (
+      extractTranscriptUserText((entry.message as { content?: unknown }).content) === params.message
+    );
+  });
+  if (!target || target.type !== "message") {
+    return;
+  }
+  const rewrittenMessage = {
+    ...target.message,
+    ...mediaFields,
+  };
+  await rewriteTranscriptEntriesInSessionFile({
+    sessionFile: params.transcriptPath,
+    sessionKey: params.sessionKey,
+    request: {
+      replacements: [
+        {
+          entryId: target.id,
+          message: rewrittenMessage,
+        },
+      ],
+    },
+  });
 }
 
 function truncateChatHistoryText(text: string): { text: string; truncated: boolean } {
@@ -1307,6 +1378,11 @@ export const chatHandlers: GatewayRequestHandlers = {
         status: "started" as const,
       };
       respond(true, ackPayload, undefined, { runId: clientRunId });
+      const persistedImagesPromise = persistChatSendImages({
+        images: parsedImages,
+        client,
+        logGateway: context.logGateway,
+      });
 
       const trimmedMessage = parsedMessage.trim();
       const injectThinking = Boolean(
@@ -1335,15 +1411,6 @@ export const chatHandlers: GatewayRequestHandlers = {
       // Only BodyForAgent gets the timestamp — Body stays raw for UI display.
       // See: https://github.com/moltbot/moltbot/issues/3658
       const stampedMessage = injectTimestamp(messageForAgent, timestampOptsFromConfig(cfg));
-      const persistedImages = await persistChatSendImages({
-        images: parsedImages,
-        client,
-        logGateway: context.logGateway,
-      });
-      const persistedMediaPaths = persistedImages.map((entry) => entry.path);
-      const persistedMediaTypes = persistedImages.map(
-        (entry) => entry.contentType ?? "application/octet-stream",
-      );
 
       const ctx: MsgContext = {
         Body: messageForAgent,
@@ -1367,14 +1434,6 @@ export const chatHandlers: GatewayRequestHandlers = {
         SenderName: clientInfo?.displayName,
         SenderUsername: clientInfo?.displayName,
         GatewayClientScopes: client?.connect?.scopes,
-        ...(persistedMediaPaths.length > 0
-          ? {
-              MediaPath: persistedMediaPaths[0],
-              MediaPaths: persistedMediaPaths,
-              MediaType: persistedMediaTypes[0],
-              MediaTypes: persistedMediaTypes,
-            }
-          : {}),
       };
 
       const agentId = resolveSessionAgentId({
@@ -1407,6 +1466,7 @@ export const chatHandlers: GatewayRequestHandlers = {
           return;
         }
         userTranscriptUpdateEmitted = true;
+        const persistedImages = await persistedImagesPromise;
         emitSessionTranscriptUpdate({
           sessionFile: transcriptPath,
           sessionKey,
@@ -1415,6 +1475,33 @@ export const chatHandlers: GatewayRequestHandlers = {
             savedImages: persistedImages,
             timestamp: now,
           }),
+        });
+      };
+      let transcriptMediaRewriteDone = false;
+      const rewriteUserTranscriptMedia = async () => {
+        if (transcriptMediaRewriteDone) {
+          return;
+        }
+        const { storePath: latestStorePath, entry: latestEntry } = loadSessionEntry(sessionKey);
+        const resolvedSessionId = latestEntry?.sessionId ?? entry?.sessionId;
+        if (!resolvedSessionId) {
+          return;
+        }
+        const transcriptPath = resolveTranscriptPath({
+          sessionId: resolvedSessionId,
+          storePath: latestStorePath,
+          sessionFile: latestEntry?.sessionFile ?? entry?.sessionFile,
+          agentId,
+        });
+        if (!transcriptPath) {
+          return;
+        }
+        transcriptMediaRewriteDone = true;
+        await rewriteChatSendUserTurnMediaPaths({
+          transcriptPath,
+          sessionKey,
+          message: parsedMessage,
+          savedImages: await persistedImagesPromise,
         });
       };
       const dispatcher = createReplyDispatcher({
@@ -1463,6 +1550,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         },
       })
         .then(async () => {
+          await rewriteUserTranscriptMedia();
           if (!agentRunStarted) {
             await emitUserTranscriptUpdate();
             const btwReplies = deliveredReplies
