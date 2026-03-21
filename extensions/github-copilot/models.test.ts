@@ -76,7 +76,7 @@ describe("resolveCopilotForwardCompatModel", () => {
   });
 
   it("infers reasoning=true for o1/o3 model IDs", () => {
-    for (const id of ["o1", "o3-mini", "o1-preview"]) {
+    for (const id of ["o1", "o3", "o3-mini", "o1-preview"]) {
       const ctx = createMockCtx(id);
       const result = resolveCopilotForwardCompatModel(ctx);
       expect(result).toBeDefined();

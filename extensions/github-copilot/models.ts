@@ -20,7 +20,7 @@ export function resolveCopilotForwardCompatModel(
   }
 
   // If the model is already in the registry, let the normal path handle it.
-  const existing = ctx.modelRegistry.find(PROVIDER_ID, trimmedModelId);
+  const existing = ctx.modelRegistry.find(PROVIDER_ID, trimmedModelId.toLowerCase());
   if (existing) {
     return undefined;
   }
