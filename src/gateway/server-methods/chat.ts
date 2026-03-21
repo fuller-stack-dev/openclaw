@@ -1293,22 +1293,6 @@ export const chatHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    // Persist inbound images to disk for all chat.send callers (parity with WhatsApp/Telegram
-    // handlers). This covers webchat, native app (iOS/Android/macOS), and control UI clients.
-    // Runs after sendPolicy/stop/dedupe checks so only accepted requests write files.
-    // Gated to non-ACP callers: ACP/IDE screenshots are transient and handled upstream.
-    // Fire-and-forget: deferred to avoid blocking the "started" ack with synchronous
-    // base64 decoding of potentially large attachments.
-    const persistedImagesPromise = new Promise<SavedMedia[]>((resolve) => {
-      setImmediate(() => {
-        void persistChatSendImages({
-          images: parsedImages,
-          client,
-          logGateway: context.logGateway,
-        }).then(resolve);
-      });
-    });
-
     try {
       const abortController = new AbortController();
       context.chatAbortControllers.set(clientRunId, {
@@ -1353,6 +1337,15 @@ export const chatHandlers: GatewayRequestHandlers = {
       // Only BodyForAgent gets the timestamp — Body stays raw for UI display.
       // See: https://github.com/moltbot/moltbot/issues/3658
       const stampedMessage = injectTimestamp(messageForAgent, timestampOptsFromConfig(cfg));
+      const persistedImages = await persistChatSendImages({
+        images: parsedImages,
+        client,
+        logGateway: context.logGateway,
+      });
+      const persistedMediaPaths = persistedImages.map((entry) => entry.path);
+      const persistedMediaTypes = persistedImages.map(
+        (entry) => entry.contentType ?? "application/octet-stream",
+      );
 
       const ctx: MsgContext = {
         Body: messageForAgent,
@@ -1376,6 +1369,14 @@ export const chatHandlers: GatewayRequestHandlers = {
         SenderName: clientInfo?.displayName,
         SenderUsername: clientInfo?.displayName,
         GatewayClientScopes: client?.connect?.scopes,
+        ...(persistedMediaPaths.length > 0
+          ? {
+              MediaPath: persistedMediaPaths[0],
+              MediaPaths: persistedMediaPaths,
+              MediaType: persistedMediaTypes[0],
+              MediaTypes: persistedMediaTypes,
+            }
+          : {}),
       };
 
       const agentId = resolveSessionAgentId({
@@ -1408,7 +1409,6 @@ export const chatHandlers: GatewayRequestHandlers = {
           return;
         }
         userTranscriptUpdateEmitted = true;
-        const persistedImages = await persistedImagesPromise;
         emitSessionTranscriptUpdate({
           sessionFile: transcriptPath,
           sessionKey,
