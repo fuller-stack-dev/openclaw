@@ -296,19 +296,17 @@ async function persistChatSendImages(params: {
   if (params.images.length === 0 || isAcpBridgeClient(params.client)) {
     return [];
   }
-  const saved = await Promise.all(
-    params.images.map(async (img) => {
-      try {
-        return await saveMediaBuffer(Buffer.from(img.data, "base64"), img.mimeType, "inbound");
-      } catch (err) {
-        params.logGateway.warn(
-          `chat.send: failed to persist inbound image (${img.mimeType}): ${formatForLog(err)}`,
-        );
-        return null;
-      }
-    }),
-  );
-  return saved.filter((entry) => entry !== null);
+  const saved: SavedMedia[] = [];
+  for (const img of params.images) {
+    try {
+      saved.push(await saveMediaBuffer(Buffer.from(img.data, "base64"), img.mimeType, "inbound"));
+    } catch (err) {
+      params.logGateway.warn(
+        `chat.send: failed to persist inbound image (${img.mimeType}): ${formatForLog(err)}`,
+      );
+    }
+  }
+  return saved;
 }
 
 function buildChatSendTranscriptMessage(params: {
