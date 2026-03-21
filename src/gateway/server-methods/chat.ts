@@ -5,13 +5,14 @@ import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
+import { buildInboundMediaNote } from "../../auto-reply/media-note.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
-import { saveMediaBuffer } from "../../media/store.js";
+import { type SavedMedia, saveMediaBuffer } from "../../media/store.js";
 import { createChannelReplyPipeline } from "../../plugin-sdk/channel-reply-pipeline.js";
 import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
@@ -286,6 +287,60 @@ function isAcpBridgeClient(client: GatewayRequestHandlerOptions["client"]): bool
     info?.displayName === "ACP" &&
     info?.version === "acp"
   );
+}
+
+async function persistChatSendImages(params: {
+  images: ChatImageContent[];
+  client: GatewayRequestHandlerOptions["client"];
+  logGateway: GatewayRequestContext["logGateway"];
+}): Promise<SavedMedia[]> {
+  if (params.images.length === 0 || isAcpBridgeClient(params.client)) {
+    return [];
+  }
+  const saved = await Promise.all(
+    params.images.map(async (img) => {
+      try {
+        return await saveMediaBuffer(Buffer.from(img.data, "base64"), img.mimeType, "inbound");
+      } catch (err) {
+        params.logGateway.warn(
+          `chat.send: failed to persist inbound image (${img.mimeType}): ${formatForLog(err)}`,
+        );
+        return null;
+      }
+    }),
+  );
+  return saved.filter((entry) => entry !== null);
+}
+
+function buildChatSendTranscriptMessage(params: {
+  message: string;
+  savedImages: SavedMedia[];
+  timestamp: number;
+}) {
+  const mediaNote = buildInboundMediaNote({
+    Body: params.message,
+    BodyForAgent: params.message,
+    BodyForCommands: params.message,
+    CommandAuthorized: true,
+    MediaPaths: params.savedImages.map((entry) => entry.path),
+    MediaTypes: params.savedImages.map((entry) => entry.contentType ?? "application/octet-stream"),
+  });
+  if (!mediaNote) {
+    return {
+      role: "user" as const,
+      content: params.message,
+      timestamp: params.timestamp,
+    };
+  }
+  const content = [
+    { type: "text" as const, text: params.message },
+    { type: "text" as const, text: mediaNote },
+  ];
+  return {
+    role: "user" as const,
+    content: params.message ? content : content.slice(1),
+    timestamp: params.timestamp,
+  };
 }
 
 function truncateChatHistoryText(text: string): { text: string; truncated: boolean } {
@@ -1252,23 +1307,15 @@ export const chatHandlers: GatewayRequestHandlers = {
     // Gated to non-ACP callers: ACP/IDE screenshots are transient and handled upstream.
     // Fire-and-forget: deferred to avoid blocking the "started" ack with synchronous
     // base64 decoding of potentially large attachments.
-    // NOTE: saved file paths are intentionally not captured here — wiring persisted paths
-    // into the session transcript (for compaction survival) is a follow-up task.
-    if (parsedImages.length > 0 && !isAcpBridgeClient(client)) {
-      const imagesToPersist = parsedImages.map((img) => ({
-        data: img.data,
-        mimeType: img.mimeType,
-      }));
+    const persistedImagesPromise = new Promise<SavedMedia[]>((resolve) => {
       setImmediate(() => {
-        for (const img of imagesToPersist) {
-          saveMediaBuffer(Buffer.from(img.data, "base64"), img.mimeType, "inbound").catch((err) => {
-            context.logGateway.warn(
-              `chat.send: failed to persist inbound image (${img.mimeType}): ${formatForLog(err)}`,
-            );
-          });
-        }
+        void persistChatSendImages({
+          images: parsedImages,
+          client,
+          logGateway: context.logGateway,
+        }).then(resolve);
       });
-    }
+    });
 
     try {
       const abortController = new AbortController();
@@ -1349,13 +1396,8 @@ export const chatHandlers: GatewayRequestHandlers = {
         channel: INTERNAL_MESSAGE_CHANNEL,
       });
       const deliveredReplies: Array<{ payload: ReplyPayload; kind: "block" | "final" }> = [];
-      const userTranscriptMessage = {
-        role: "user" as const,
-        content: parsedMessage,
-        timestamp: now,
-      };
       let userTranscriptUpdateEmitted = false;
-      const emitUserTranscriptUpdate = () => {
+      const emitUserTranscriptUpdate = async () => {
         if (userTranscriptUpdateEmitted) {
           return;
         }
@@ -1374,10 +1416,15 @@ export const chatHandlers: GatewayRequestHandlers = {
           return;
         }
         userTranscriptUpdateEmitted = true;
+        const persistedImages = await persistedImagesPromise;
         emitSessionTranscriptUpdate({
           sessionFile: transcriptPath,
           sessionKey,
-          message: userTranscriptMessage,
+          message: buildChatSendTranscriptMessage({
+            message: parsedMessage,
+            savedImages: persistedImages,
+            timestamp: now,
+          }),
         });
       };
       const dispatcher = createReplyDispatcher({
@@ -1404,7 +1451,7 @@ export const chatHandlers: GatewayRequestHandlers = {
           images: parsedImages.length > 0 ? parsedImages : undefined,
           onAgentRunStart: (runId) => {
             agentRunStarted = true;
-            emitUserTranscriptUpdate();
+            void emitUserTranscriptUpdate();
             const connId = typeof client?.connId === "string" ? client.connId : undefined;
             const wantsToolEvents = hasGatewayClientCap(
               client?.connect?.caps,
@@ -1426,7 +1473,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         },
       })
         .then(() => {
-          emitUserTranscriptUpdate();
+          void emitUserTranscriptUpdate();
           if (!agentRunStarted) {
             const btwReplies = deliveredReplies
               .map((entry) => entry.payload)
