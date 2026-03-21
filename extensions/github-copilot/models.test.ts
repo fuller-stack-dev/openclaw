@@ -84,8 +84,14 @@ describe("resolveCopilotForwardCompatModel", () => {
     }
   });
 
-  it("sets reasoning=false for non-reasoning model IDs", () => {
-    for (const id of ["gpt-5.4-mini", "claude-sonnet-4.6", "gpt-4o"]) {
+  it("sets reasoning=false for non-reasoning model IDs including mid-string o1/o3", () => {
+    for (const id of [
+      "gpt-5.4-mini",
+      "claude-sonnet-4.6",
+      "gpt-4o",
+      "audio-o1-hd",
+      "turbo-o3-voice",
+    ]) {
       const ctx = createMockCtx(id);
       const result = resolveCopilotForwardCompatModel(ctx);
       expect(result).toBeDefined();

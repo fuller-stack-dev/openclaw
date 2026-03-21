@@ -5,8 +5,8 @@ import type {
 import { normalizeModelCompat } from "openclaw/plugin-sdk/provider-models";
 
 export const PROVIDER_ID = "github-copilot";
-export const CODEX_GPT_53_MODEL_ID = "gpt-5.3-codex";
-export const CODEX_TEMPLATE_MODEL_IDS = ["gpt-5.2-codex"] as const;
+const CODEX_GPT_53_MODEL_ID = "gpt-5.3-codex";
+const CODEX_TEMPLATE_MODEL_IDS = ["gpt-5.2-codex"] as const;
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 8192;
@@ -51,7 +51,7 @@ export function resolveCopilotForwardCompatModel(
   // by simply adding them to agents.defaults.models in openclaw.json — no
   // code change required.
   const lowerModelId = trimmedModelId.toLowerCase();
-  const reasoning = /\bo[13]\b/.test(lowerModelId);
+  const reasoning = /^o[13](\b|$)/.test(lowerModelId);
   return normalizeModelCompat({
     id: trimmedModelId,
     name: trimmedModelId,
