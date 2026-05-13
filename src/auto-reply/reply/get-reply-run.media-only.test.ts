@@ -506,15 +506,15 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   it.each([
-    ["discord", "collect"],
-    ["telegram", "followup"],
-    ["slack", "collect"],
-    ["whatsapp", "followup"],
-    ["signal", "followup"],
-    ["imessage", "followup"],
-    ["matrix", "collect"],
-    ["msteams", "collect"],
-    ["webchat", "followup"],
+    "discord",
+    "telegram",
+    "slack",
+    "whatsapp",
+    "signal",
+    "imessage",
+    "matrix",
+    "msteams",
+    "webchat",
   ] as const)("enables default same-turn steering for active %s runs", async (channel) => {
     const queueSettings = await import("./queue/settings-runtime.js");
     const piRuntime = await import("../../agents/pi-embedded.runtime.js");
