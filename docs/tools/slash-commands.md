@@ -145,7 +145,7 @@ Current source-of-truth:
     - `/model [name|#|status]` shows or sets the model.
     - `/models [provider] [page] [limit=<n>|size=<n>|all]` lists configured/auth-available providers or models for a provider; add `all` to browse that provider's full catalog. `provider/*` entries in `agents.defaults.models` make `/model` and `/models` show discovered models only for those providers.
     - `/queue <mode>` manages fallback queue behavior (`followup`, `collect`, `interrupt`) plus options like `debounce:0.5s cap:25 drop:summarize`; `/queue default` or `/queue reset` clears the session override. Mid-run prompts steer by default without a queue directive. See [Command queue](/concepts/queue) and [Steering queue](/concepts/queue-steering).
-    - `/steer <message>` injects guidance into the active run for the current session, independent of `/queue` mode. It does not start a new run when the session is idle. Alias: `/tell`. See [Steer](/tools/steer).
+    - `/steer <message>` injects guidance into the active run for the current session, independent of `/queue` mode. If steering is unavailable or the session is idle, `<message>` continues as a normal prompt. Alias: `/tell`. See [Steer](/tools/steer).
 
   </Accordion>
   <Accordion title="Discovery and status">

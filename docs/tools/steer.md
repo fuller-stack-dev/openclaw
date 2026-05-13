@@ -8,8 +8,10 @@ title: "Steer"
 sidebarTitle: "Steer"
 ---
 
-`/steer` sends guidance to an already-active run. It is for "adjust this
-run while it is still working" moments, not for starting a new turn.
+`/steer` first tries to send guidance to an already-active run. It is for
+"adjust this run while it is still working" moments. If the current runtime
+cannot accept steering, OpenClaw sends the message as a normal prompt instead
+of dropping it.
 
 ## Current session
 
@@ -24,8 +26,8 @@ Behavior:
 
 - Targets only the current session's active run.
 - Works independently of the session's `/queue` mode.
-- Does not start a new run when the session is idle.
-- Replies with a warning when there is no active run to steer.
+- Starts a normal turn with the same message when the session is idle or the
+  active run cannot accept steering.
 - Uses the active runtime's steering path, so the model sees the guidance at
   the next supported runtime boundary.
 
@@ -34,7 +36,9 @@ Behavior:
 `/queue steer` changes how normal inbound messages behave when they arrive
 while a run is active. `/steer <message>` is an explicit command that tries to
 inject that command's message into the active run at the next supported runtime
-boundary, regardless of the stored `/queue` setting.
+boundary, regardless of the stored `/queue` setting. When that injection is not
+available, the command prefix is stripped and `<message>` continues as a normal
+prompt.
 
 Use:
 
