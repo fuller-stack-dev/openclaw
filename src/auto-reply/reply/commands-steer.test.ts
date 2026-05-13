@@ -5,7 +5,7 @@ import { buildCommandTestParams } from "./commands.test-harness.js";
 const steerRuntimeMocks = vi.hoisted(() => ({
   formatEmbeddedPiQueueFailureSummary: vi.fn(),
   isEmbeddedPiRunActive: vi.fn(),
-  queueEmbeddedPiMessageWithOutcome: vi.fn(),
+  queueEmbeddedPiMessageWithOutcomeAsync: vi.fn(),
   resolveActiveEmbeddedRunSessionId: vi.fn(),
 }));
 
@@ -30,7 +30,7 @@ describe("handleSteerCommand", () => {
         "queue_message_failed reason=not_streaming sessionId=session-active gatewayHealth=live",
       );
     steerRuntimeMocks.isEmbeddedPiRunActive.mockReset().mockReturnValue(false);
-    steerRuntimeMocks.queueEmbeddedPiMessageWithOutcome.mockReset().mockReturnValue({
+    steerRuntimeMocks.queueEmbeddedPiMessageWithOutcomeAsync.mockReset().mockResolvedValue({
       queued: true,
       sessionId: "session-active",
       target: "embedded_run",
@@ -51,7 +51,7 @@ describe("handleSteerCommand", () => {
     expect(steerRuntimeMocks.resolveActiveEmbeddedRunSessionId).toHaveBeenCalledWith(
       "agent:main:main",
     );
-    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcome).toHaveBeenCalledWith(
+    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcomeAsync).toHaveBeenCalledWith(
       "session-active",
       "keep going",
       {
@@ -74,7 +74,7 @@ describe("handleSteerCommand", () => {
     expect(steerRuntimeMocks.resolveActiveEmbeddedRunSessionId).toHaveBeenCalledWith(
       "agent:main:discord:direct:target",
     );
-    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcome).toHaveBeenCalledWith(
+    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcomeAsync).toHaveBeenCalledWith(
       "session-target",
       "check the target",
       {
@@ -96,7 +96,7 @@ describe("handleSteerCommand", () => {
       "agent:main:main",
     );
     expect(steerRuntimeMocks.isEmbeddedPiRunActive).toHaveBeenCalledWith("stored-session-id");
-    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcome).toHaveBeenCalledWith(
+    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcomeAsync).toHaveBeenCalledWith(
       "stored-session-id",
       "continue from state",
       {
@@ -113,7 +113,7 @@ describe("handleSteerCommand", () => {
       shouldContinue: false,
       reply: { text: "Usage: /steer <message>" },
     });
-    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcome).not.toHaveBeenCalled();
+    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcomeAsync).not.toHaveBeenCalled();
   });
 
   it("does not start a new run when no current session run is active", async () => {
@@ -123,12 +123,12 @@ describe("handleSteerCommand", () => {
       shouldContinue: false,
       reply: { text: "⚠️ No active run to steer in this session." },
     });
-    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcome).not.toHaveBeenCalled();
+    expect(steerRuntimeMocks.queueEmbeddedPiMessageWithOutcomeAsync).not.toHaveBeenCalled();
   });
 
   it("reports when the active run rejects steering injection", async () => {
     steerRuntimeMocks.resolveActiveEmbeddedRunSessionId.mockReturnValue("session-active");
-    steerRuntimeMocks.queueEmbeddedPiMessageWithOutcome.mockReturnValue({
+    steerRuntimeMocks.queueEmbeddedPiMessageWithOutcomeAsync.mockResolvedValue({
       queued: false,
       sessionId: "session-active",
       reason: "not_streaming",
@@ -151,7 +151,7 @@ describe("handleSteerCommand", () => {
 
   it("reports compacting runs distinctly", async () => {
     steerRuntimeMocks.resolveActiveEmbeddedRunSessionId.mockReturnValue("session-active");
-    steerRuntimeMocks.queueEmbeddedPiMessageWithOutcome.mockReturnValue({
+    steerRuntimeMocks.queueEmbeddedPiMessageWithOutcomeAsync.mockResolvedValue({
       queued: false,
       sessionId: "session-active",
       reason: "compacting",

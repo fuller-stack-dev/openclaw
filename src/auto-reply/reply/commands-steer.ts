@@ -9,7 +9,7 @@ import { rejectUnauthorizedCommand } from "./command-gates.js";
 import {
   formatEmbeddedPiQueueFailureSummary,
   isEmbeddedPiRunActive,
-  queueEmbeddedPiMessageWithOutcome,
+  queueEmbeddedPiMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunSessionId,
 } from "./commands-steer.runtime.js";
 import type { CommandHandler, HandleCommandsParams } from "./commands-types.js";
@@ -111,7 +111,7 @@ export const handleSteerCommand: CommandHandler = async (params, allowTextComman
     return { shouldContinue: false, reply: { text: "⚠️ No active run to steer in this session." } };
   }
 
-  const queueOutcome = queueEmbeddedPiMessageWithOutcome(sessionId, message, {
+  const queueOutcome = await queueEmbeddedPiMessageWithOutcomeAsync(sessionId, message, {
     steeringMode: "all",
     debounceMs: 0,
   });
