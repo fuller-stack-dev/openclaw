@@ -118,7 +118,9 @@ function clearActiveRunSessionKeys(sessionId: string, sessionKey?: string): void
 }
 
 /**
- * @deprecated Use queueEmbeddedPiMessageWithOutcome so callers preserve failure reasons.
+ * @deprecated Use queueEmbeddedPiMessageWithOutcomeAsync for delivery decisions.
+ * This boolean helper only reports immediate queue eligibility; it cannot surface
+ * async runtime rejection from the active run.
  */
 export function queueEmbeddedPiMessage(
   sessionId: string,
@@ -128,6 +130,11 @@ export function queueEmbeddedPiMessage(
   return queueEmbeddedPiMessageWithOutcome(sessionId, text, options).queued;
 }
 
+/**
+ * @deprecated Prefer queueEmbeddedPiMessageWithOutcomeAsync when callers need to
+ * know whether steering was accepted. This sync helper is fire-and-forget after
+ * initial eligibility and only logs later runtime rejection.
+ */
 export function queueEmbeddedPiMessageWithOutcome(
   sessionId: string,
   text: string,
