@@ -150,9 +150,9 @@ requests fail closed.
 ## Queue steering
 
 Active-run queue steering maps onto Codex app-server `turn/steer`. With the
-default `messages.queue.mode: "steer"`, OpenClaw batches queued chat messages
-for the configured quiet window and sends them as one `turn/steer` request in
-arrival order.
+default `messages.queue.mode: "steer"`, OpenClaw batches steer-mode chat
+messages for the configured quiet window and sends them as one `turn/steer`
+request in arrival order.
 
 Codex review and manual compaction turns can reject same-turn steering. In that
 case, OpenClaw waits for the active run to finish before starting the prompt.

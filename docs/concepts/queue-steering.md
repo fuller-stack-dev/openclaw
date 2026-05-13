@@ -3,7 +3,7 @@ summary: "How active-run steering queues messages at runtime boundaries"
 read_when:
   - Explaining how steer behaves while an agent is using tools
   - Changing active-run queue behavior or runtime steering integration
-  - Comparing steering with followup, collect, and interrupt fallback modes
+  - Comparing steering with followup, collect, and interrupt queue modes
 title: "Steering queue"
 ---
 
@@ -36,8 +36,10 @@ Codex review and manual compaction turns reject same-turn steering. When a
 runtime cannot accept steering in `steer` mode, OpenClaw waits for the active
 run to finish before starting the prompt.
 
-This page explains queue-mode steering for normal inbound messages. For the
-explicit `/steer <message>` command, see [Steer](/tools/steer).
+This page explains queue-mode steering for normal inbound messages when the mode
+is `steer`. If the mode is `followup` or `collect`, normal messages do not enter
+this steering path; they wait until the active run finishes. For the explicit
+`/steer <message>` command, see [Steer](/tools/steer).
 
 ## Modes
 
@@ -74,10 +76,11 @@ replace the active run.
 
 ## Debounce
 
-`messages.queue.debounceMs` applies to followup fallback delivery and to the
-native Codex harness quiet window before sending batched `turn/steer`. For Pi,
-active steering itself does not use the debounce timer because Pi naturally
-batches messages until the next model boundary.
+`messages.queue.debounceMs` applies to queued `followup` and `collect` delivery.
+In `steer` mode with the native Codex harness, it also sets the quiet window
+before sending batched `turn/steer`. For Pi, active steering itself does not use
+the debounce timer because Pi naturally batches messages until the next model
+boundary.
 
 ## Related
 

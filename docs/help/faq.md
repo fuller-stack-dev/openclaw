@@ -1944,11 +1944,11 @@ lives on the [Models FAQ](/help/faq-models).
     Mid-run prompts are steered into the active run by default. Use `/queue` to choose active-run behavior:
 
     - `steer` - guide the active run at the next model boundary
-    - `followup` - run messages one at a time
-    - `collect` - batch messages and reply once
+    - `followup` - queue messages and run them one at a time after the current run ends
+    - `collect` - queue compatible messages and reply once after the current run ends
     - `interrupt` - abort current run and start fresh
 
-    Default mode is `steer`. You can add options like `debounce:0.5s cap:25 drop:summarize` for followup modes. See [Command queue](/concepts/queue) and [Steering queue](/concepts/queue-steering).
+    Default mode is `steer`. You can add options like `debounce:0.5s cap:25 drop:summarize` for queued modes. See [Command queue](/concepts/queue) and [Steering queue](/concepts/queue-steering).
 
   </Accordion>
 </AccordionGroup>

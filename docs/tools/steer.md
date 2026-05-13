@@ -50,7 +50,7 @@ Use:
 - `/queue interrupt` when the newest message should replace the active run
   instead of steering it.
 
-For queue modes and fallback behavior, see [Command queue](/concepts/queue) and
+For queue modes and steering boundaries, see [Command queue](/concepts/queue) and
 [Steering queue](/concepts/queue-steering).
 
 ## Sub-agents

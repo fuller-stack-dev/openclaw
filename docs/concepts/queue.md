@@ -37,11 +37,12 @@ active run to finish before starting the prompt.
 
 ## Queue modes
 
-`/queue` controls active-run behavior:
+`/queue` controls what normal inbound messages do while a session already has
+an active run:
 
 - `steer`: inject messages into the active runtime. Pi delivers all pending steering messages **after the current assistant turn finishes executing its tool calls**, before the next LLM call; Codex app-server receives one batched `turn/steer`. If the run is not actively streaming or steering is unavailable, OpenClaw waits until the active run ends before starting the prompt.
-- `followup`: enqueue each message for a later agent turn after the current run ends.
-- `collect`: coalesce queued messages into a **single** followup turn after the quiet window. If messages target different channels/threads, they drain individually to preserve routing.
+- `followup`: do not steer. Enqueue each message for a later agent turn after the current run ends.
+- `collect`: do not steer. Coalesce queued messages into a **single** followup turn after the quiet window. If messages target different channels/threads, they drain individually to preserve routing.
 - `interrupt`: abort the active run for that session, then run the newest message.
 
 For runtime-specific timing and dependency behavior, see
@@ -66,9 +67,10 @@ Configure globally or per channel via `messages.queue`:
 
 ## Queue options
 
-Options apply to followup fallback delivery:
+Options apply to queued delivery. `debounceMs` also sets the Codex steering
+quiet window in `steer` mode:
 
-- `debounceMs`: quiet window before draining queued followups. Bare numbers are milliseconds; units `ms`, `s`, `m`, `h`, and `d` are accepted by `/queue` options.
+- `debounceMs`: quiet window before draining queued followups or collect batches; in Codex `steer` mode, quiet window before sending batched `turn/steer`. Bare numbers are milliseconds; units `ms`, `s`, `m`, `h`, and `d` are accepted by `/queue` options.
 - `cap`: max queued messages per session. Values below `1` are ignored.
 - `drop: "summarize"`: default. Drop the oldest queued entries as needed, keep compact summaries, and inject them as a synthetic followup prompt.
 - `drop: "old"`: drop the oldest queued entries as needed, without preserving summaries.
@@ -83,7 +85,7 @@ For mode selection, OpenClaw resolves:
 1. Inline or stored per-session `/queue` override.
 2. `messages.queue.byChannel.<channel>`.
 3. `messages.queue.mode`.
-4. Default `followup`.
+4. Default `steer`.
 
 For options, inline or stored `/queue` options win over config. Then
 channel-specific debounce (`messages.queue.debounceMsByChannel`), plugin
