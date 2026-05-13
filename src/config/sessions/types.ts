@@ -290,7 +290,7 @@ export type SessionEntry = {
   groupActivation?: "mention" | "always";
   groupActivationNeedsSystemIntro?: boolean;
   sendPolicy?: "allow" | "deny";
-  queueMode?: "followup" | "collect" | "interrupt";
+  queueMode?: "steer" | "followup" | "collect" | "interrupt";
   queueDebounceMs?: number;
   queueCap?: number;
   queueDrop?: "old" | "new" | "summarize";
