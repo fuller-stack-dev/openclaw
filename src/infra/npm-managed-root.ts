@@ -578,11 +578,21 @@ export async function syncManagedNpmRootPeerDependencies(params: {
 
 export async function repairManagedNpmRootOpenClawPeer(params: {
   npmRoot: string;
+  packageRoot?: string | null;
   timeoutMs?: number;
   logger?: ManagedNpmRootLogger;
   runCommand?: ManagedNpmRootRunCommand;
 }): Promise<boolean> {
   await fs.mkdir(params.npmRoot, { recursive: true });
+
+  if (
+    await managedNpmRootOpenClawPackageIsActiveHost({
+      npmRoot: params.npmRoot,
+      packageRoot: params.packageRoot,
+    })
+  ) {
+    return false;
+  }
 
   const manifestPath = path.join(params.npmRoot, "package.json");
   const manifest = await readManagedNpmRootManifest(manifestPath);
@@ -640,6 +650,30 @@ export async function repairManagedNpmRootOpenClawPeer(params: {
   return true;
 }
 
+async function managedNpmRootOpenClawPackageIsActiveHost(params: {
+  npmRoot: string;
+  packageRoot?: string | null;
+}): Promise<boolean> {
+  const packageRoot =
+    params.packageRoot === undefined
+      ? resolveOpenClawPackageRootSync({
+          argv1: process.argv[1],
+          moduleUrl: import.meta.url,
+          cwd: process.cwd(),
+        })
+      : params.packageRoot;
+  if (!packageRoot) {
+    return false;
+  }
+
+  const managedOpenClawPackageDir = path.join(params.npmRoot, "node_modules", "openclaw");
+  const [hostPackageRoot, managedPackageRoot] = await Promise.all([
+    realpathIfExists(packageRoot),
+    realpathIfExists(managedOpenClawPackageDir),
+  ]);
+  return hostPackageRoot !== null && hostPackageRoot === managedPackageRoot;
+}
+
 async function managedNpmRootLockfileHasOpenClawPeer(npmRoot: string): Promise<boolean> {
   const lockPath = path.join(npmRoot, "package-lock.json");
   try {
@@ -661,6 +695,17 @@ async function managedNpmRootLockfileHasOpenClawPeer(npmRoot: string): Promise<b
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
+    }
+    throw err;
+  }
+}
+
+async function realpathIfExists(filePath: string): Promise<string | null> {
+  try {
+    return await fs.realpath(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
     }
     throw err;
   }
