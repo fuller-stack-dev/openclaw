@@ -1886,6 +1886,57 @@ describe("update-cli", () => {
     ).toContain("Low disk space near");
   });
 
+  it("targets the managed service package root when it differs from the shell CLI root", async () => {
+    const tempDir = await createTrackedTempDir("openclaw-update-managed-root-");
+    const shellRoot = path.join(tempDir, "nvm", "lib", "node_modules", "openclaw");
+    const serviceRoot = path.join(tempDir, "managed", "lib", "node_modules", "openclaw");
+    const serviceEntry = path.join(serviceRoot, "dist", "index.js");
+    mockPackageInstallStatus(shellRoot);
+    await fs.mkdir(path.dirname(serviceEntry), { recursive: true });
+    await fs.writeFile(
+      path.join(serviceRoot, "package.json"),
+      JSON.stringify({ name: "openclaw", version: "1.0.0" }),
+      "utf-8",
+    );
+    await fs.writeFile(serviceEntry, "export {};\n", "utf-8");
+    const serviceRootReal = await fs.realpath(serviceRoot);
+    serviceReadCommand.mockResolvedValue({
+      programArguments: [process.execPath, serviceEntry, "gateway", "run"],
+    });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({
+      status: "running",
+      pid: 4242,
+      state: "running",
+    });
+
+    await updateCommand({ yes: true });
+
+    expect(resolveGlobalManager).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: serviceRootReal,
+        installKind: "package",
+      }),
+    );
+    expect(readPackageVersion).toHaveBeenCalledWith(serviceRootReal);
+    expect(readPackageVersion).not.toHaveBeenCalledWith(shellRoot);
+    expectPackageInstallSpec("openclaw@latest");
+    const logs = vi.mocked(defaultRuntime.log).mock.calls.map((call) => String(call[0]));
+    const managedRootLogIndex = logs.findIndex((line) =>
+      line.includes(
+        `Managed gateway service uses ${serviceRootReal}; updating that package root instead of ${shellRoot}.`,
+      ),
+    );
+    expect(managedRootLogIndex).toBeGreaterThanOrEqual(0);
+    const managedRootLogOrder = vi.mocked(defaultRuntime.log).mock.invocationCallOrder[
+      managedRootLogIndex
+    ];
+    const serviceStopOrder = serviceStop.mock.invocationCallOrder[0];
+    expect(requireValue(managedRootLogOrder, "managed root log order")).toBeLessThan(
+      requireValue(serviceStopOrder, "service stop order"),
+    );
+  });
+
   it("allows package updates from inherited gateway service env when the managed gateway is not running", async () => {
     mockPackageInstallStatus(createCaseDir("openclaw-update"));
     serviceReadRuntime.mockResolvedValueOnce({

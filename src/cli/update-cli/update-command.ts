@@ -32,6 +32,7 @@ import { GATEWAY_SERVICE_KIND, GATEWAY_SERVICE_MARKER } from "../../daemon/const
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
 import { disableCurrentOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js";
 import { resolveGatewayRestartLogPath } from "../../daemon/restart-logs.js";
+import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
 import {
   readGatewayServiceState,
   resolveGatewayService,
@@ -747,6 +748,75 @@ type PrePackageServiceStop = {
   blockMessage?: string;
   serviceEnv?: NodeJS.ProcessEnv;
 };
+
+type ManagedServicePackageRootSelection = {
+  root: string;
+  previousRoot: string;
+};
+
+async function resolveComparableRootPath(root: string): Promise<string> {
+  const resolved = path.resolve(root);
+  try {
+    return await fs.realpath(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function sameResolvedRoot(left: string, right: string): boolean {
+  return path.resolve(left) === path.resolve(right);
+}
+
+async function resolveManagedServicePackageUpdateRoot(params: {
+  root: string;
+}): Promise<ManagedServicePackageRootSelection | null> {
+  let command: Awaited<ReturnType<GatewayService["readCommand"]>>;
+  try {
+    command = await resolveGatewayService().readCommand(process.env);
+  } catch {
+    return null;
+  }
+
+  if (!command) {
+    return null;
+  }
+
+  let layout: Awaited<ReturnType<typeof summarizeGatewayServiceLayout>>;
+  try {
+    layout = await summarizeGatewayServiceLayout(command);
+  } catch {
+    return null;
+  }
+
+  if (!layout?.packageRoot || layout.entrypointSourceCheckout) {
+    return null;
+  }
+
+  const previousRootReal = await resolveComparableRootPath(params.root);
+  const rootReal = layout.packageRootReal ?? (await resolveComparableRootPath(layout.packageRoot));
+  if (sameResolvedRoot(previousRootReal, rootReal)) {
+    return null;
+  }
+
+  return {
+    root: layout.packageRoot,
+    previousRoot: params.root,
+  };
+}
+
+function logManagedServicePackageRootSelection(
+  selection: ManagedServicePackageRootSelection | null,
+  jsonMode: boolean,
+): void {
+  if (!selection || jsonMode) {
+    return;
+  }
+  defaultRuntime.log(
+    theme.muted(
+      `Managed gateway service uses ${selection.root}; updating that package root instead of ${selection.previousRoot}.`,
+    ),
+  );
+}
 
 function formatGatewayAncestryBlockMessage(pid: number): string {
   return `openclaw update detected it is running inside the gateway process tree.
@@ -2722,7 +2792,7 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
   }
   const updateStepTimeoutMs = timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS;
 
-  const root = await resolveUpdateRoot();
+  let root = await resolveUpdateRoot();
   if (postCoreUpdateResume) {
     if (
       postCoreUpdateChannel !== "stable" &&
@@ -2844,6 +2914,12 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
   const devTargetRef =
     channel === "dev" ? process.env.OPENCLAW_UPDATE_DEV_TARGET_REF?.trim() || undefined : undefined;
 
+  const managedServicePackageRootSelection =
+    updateInstallKind === "package" ? await resolveManagedServicePackageUpdateRoot({ root }) : null;
+  if (managedServicePackageRootSelection) {
+    root = managedServicePackageRootSelection.root;
+  }
+
   const explicitTag = normalizeTag(opts.tag);
   let tag = explicitTag ?? channelToNpmTag(channel);
   let currentVersion: string | null = null;
@@ -2932,6 +3008,11 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     if (explicitTag && !canResolveRegistryVersionForPackageTarget(tag)) {
       notes.push("Non-registry package specs skip npm version lookup and downgrade previews.");
     }
+    if (managedServicePackageRootSelection) {
+      notes.push(
+        `Managed gateway service package root differs from this CLI root; package update targets ${managedServicePackageRootSelection.root}.`,
+      );
+    }
 
     printDryRunPreview(
       {
@@ -3008,6 +3089,7 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     defaultRuntime.log(theme.heading("Updating OpenClaw..."));
     defaultRuntime.log("");
   }
+  logManagedServicePackageRootSelection(managedServicePackageRootSelection, Boolean(opts.json));
 
   const { progress, stop } = createUpdateProgress(showProgress);
   const startedAt = Date.now();
