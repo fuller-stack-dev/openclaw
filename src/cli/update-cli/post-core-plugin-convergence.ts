@@ -3,6 +3,8 @@ import { UPDATE_POST_CORE_CONVERGENCE_ENV } from "../../commands/doctor/shared/u
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../config/types.plugins.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "../../plugins/config-state.js";
+import { resolveDefaultPluginNpmDir } from "../../plugins/install-paths.js";
+import { relinkOpenClawPeerDependenciesInManagedNpmRoot } from "../../plugins/plugin-peer-link.js";
 import {
   resolveTrustedSourceLinkedOfficialClawHubSpec,
   resolveTrustedSourceLinkedOfficialNpmSpec,
@@ -41,6 +43,38 @@ const REPAIR_GUIDANCE = "Run `openclaw doctor --fix` to retry plugin repair.";
 const inspectGuidance = (pluginId: string) =>
   `Run \`openclaw plugins inspect ${pluginId} --runtime --json\` for details.`;
 
+async function repairManagedNpmOpenClawPeerLinks(params: {
+  env: NodeJS.ProcessEnv;
+}): Promise<{ changes: string[]; warnings: PostCoreConvergenceWarning[] }> {
+  try {
+    const result = await relinkOpenClawPeerDependenciesInManagedNpmRoot({
+      npmRoot: resolveDefaultPluginNpmDir(params.env),
+      logger: {},
+    });
+    return {
+      changes:
+        result.repaired > 0
+          ? [
+              `Repaired OpenClaw host peer link(s) for ${result.repaired} managed npm plugin package(s).`,
+            ]
+          : [],
+      warnings: [],
+    };
+  } catch (err) {
+    const message = `Failed to repair managed npm OpenClaw host peer links: ${err instanceof Error ? err.message : String(err)}`;
+    return {
+      changes: [],
+      warnings: [
+        {
+          reason: message,
+          message,
+          guidance: [REPAIR_GUIDANCE],
+        },
+      ],
+    };
+  }
+}
+
 /**
  * Mandatory post-core convergence pass. Runs AFTER the core package files
  * are swapped and the in-update doctor pass has already returned, but BEFORE
@@ -76,6 +110,8 @@ export async function runPostCorePluginConvergence(params: {
     message,
     guidance: [REPAIR_GUIDANCE],
   }));
+  const peerLinkRepair = await repairManagedNpmOpenClawPeerLinks({ env });
+  warnings.push(...peerLinkRepair.warnings);
 
   const records: Record<string, PluginInstallRecord> = repair.records;
   // Filter the smoke-check input to active records ONLY: configured /
@@ -97,7 +133,7 @@ export async function runPostCorePluginConvergence(params: {
   }
 
   return {
-    changes: repair.changes,
+    changes: [...repair.changes, ...peerLinkRepair.changes],
     warnings,
     errored: warnings.length > 0,
     smokeFailures: smoke.failures,
