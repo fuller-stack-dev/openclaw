@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
-  filterHeartbeatPairs,
+  filterHeartbeatTranscriptArtifacts,
   isHeartbeatOkResponse,
   isHeartbeatUserMessage,
 } from "./heartbeat-filter.js";
-import { HEARTBEAT_PROMPT, HEARTBEAT_TRANSCRIPT_PROMPT } from "./heartbeat.js";
+import {
+  HEARTBEAT_RESPONSE_TOOL_PROMPT,
+  HEARTBEAT_PROMPT,
+  HEARTBEAT_TRANSCRIPT_PROMPT,
+  resolveHeartbeatPromptForResponseTool,
+} from "./heartbeat.js";
 
 describe("isHeartbeatUserMessage", () => {
   it("matches heartbeat prompts", () => {
@@ -31,6 +36,24 @@ describe("isHeartbeatUserMessage", () => {
         role: "user",
         content: HEARTBEAT_TRANSCRIPT_PROMPT,
       }),
+    ).toBe(true);
+
+    expect(
+      isHeartbeatUserMessage({
+        role: "user",
+        content: HEARTBEAT_RESPONSE_TOOL_PROMPT,
+      }),
+    ).toBe(true);
+
+    const customHeartbeatPrompt = "Check the handoff queue.";
+    expect(
+      isHeartbeatUserMessage(
+        {
+          role: "user",
+          content: `${resolveHeartbeatPromptForResponseTool(customHeartbeatPrompt)}\n\nUse workspace notes only.`,
+        },
+        customHeartbeatPrompt,
+      ),
     ).toBe(true);
   });
 
@@ -97,7 +120,7 @@ describe("isHeartbeatOkResponse", () => {
   });
 });
 
-describe("filterHeartbeatPairs", () => {
+describe("filterHeartbeatTranscriptArtifacts", () => {
   it("removes no-op heartbeat pairs", () => {
     const messages = [
       { role: "user", content: "Hello" },
@@ -110,7 +133,7 @@ describe("filterHeartbeatPairs", () => {
       { role: "assistant", content: "It is 3pm." },
     ];
 
-    expect(filterHeartbeatPairs(messages, undefined, HEARTBEAT_PROMPT)).toEqual([
+    expect(filterHeartbeatTranscriptArtifacts(messages, undefined, HEARTBEAT_PROMPT)).toEqual([
       { role: "user", content: "Hello" },
       { role: "assistant", content: "Hi there!" },
       { role: "user", content: "What time is it?" },
@@ -118,14 +141,187 @@ describe("filterHeartbeatPairs", () => {
     ]);
   });
 
-  it("keeps meaningful heartbeat results and non-text assistant turns", () => {
+  it("removes heartbeat response-tool spans and preserves the next real user message", () => {
+    const messages = [
+      { role: "user", content: HEARTBEAT_TRANSCRIPT_PROMPT },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_bash", name: "bash", arguments: {} }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_bash",
+        content: [{ type: "text", text: "checked HEARTBEAT.md" }],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_heartbeat",
+            name: "heartbeat_respond",
+            arguments: {
+              outcome: "no_change",
+              notify: false,
+              summary: "No visible update.",
+            },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_heartbeat",
+        content: [{ type: "text", text: "HEARTBEAT_OK" }],
+      },
+      { role: "user", content: "what model are you" },
+    ];
+
+    expect(filterHeartbeatTranscriptArtifacts(messages, undefined, HEARTBEAT_PROMPT)).toEqual([
+      { role: "user", content: "what model are you" },
+    ]);
+  });
+
+  it("removes full default response-tool prompt spans", () => {
+    const messages = [
+      { role: "user", content: HEARTBEAT_RESPONSE_TOOL_PROMPT },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_heartbeat",
+            name: "heartbeat_respond",
+            arguments: {
+              outcome: "no_change",
+              notify: false,
+              summary: "No visible update.",
+            },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_heartbeat",
+        content: [{ type: "text", text: "HEARTBEAT_OK" }],
+      },
+      { role: "user", content: "what model are you" },
+    ];
+
+    expect(filterHeartbeatTranscriptArtifacts(messages, undefined, HEARTBEAT_PROMPT)).toEqual([
+      { role: "user", content: "what model are you" },
+    ]);
+  });
+
+  it("removes native OpenAI Responses heartbeat function-call spans", () => {
+    const messages = [
+      { role: "user", content: HEARTBEAT_TRANSCRIPT_PROMPT },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "function_call",
+            call_id: "call_bash",
+            name: "bash",
+            arguments: '{"command":"cat HEARTBEAT.md"}',
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "function_call_output",
+            call_id: "call_bash",
+            output: "checked HEARTBEAT.md",
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "function_call",
+            call_id: "call_heartbeat",
+            name: "heartbeat_respond",
+            arguments: '{"notify":false}',
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "function_call_output",
+            call_id: "call_heartbeat",
+            output: '{"notify":false}',
+          },
+        ],
+      },
+      { role: "user", content: "what model are you" },
+    ];
+
+    expect(filterHeartbeatTranscriptArtifacts(messages, undefined, HEARTBEAT_PROMPT)).toEqual([
+      { role: "user", content: "what model are you" },
+    ]);
+  });
+
+  it("removes assistant continuations after heartbeat response-tool results", () => {
+    const messages = [
+      { role: "user", content: HEARTBEAT_TRANSCRIPT_PROMPT },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_heartbeat",
+            name: "heartbeat_respond",
+            arguments: {
+              outcome: "no_change",
+              notify: false,
+              summary: "No visible update.",
+            },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_heartbeat",
+        content: [{ type: "text", text: "HEARTBEAT_OK" }],
+      },
+      { role: "assistant", content: "No visible update. notify=false" },
+      { role: "user", content: "what model are you" },
+    ];
+
+    expect(filterHeartbeatTranscriptArtifacts(messages, undefined, HEARTBEAT_PROMPT)).toEqual([
+      { role: "user", content: "what model are you" },
+    ]);
+  });
+
+  it("does not remove across a real user message", () => {
+    const messages = [
+      { role: "user", content: HEARTBEAT_TRANSCRIPT_PROMPT },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_bash", name: "bash", arguments: {} }],
+      },
+      { role: "user", content: "what model are you" },
+      { role: "assistant", content: "notify=false" },
+    ];
+
+    expect(filterHeartbeatTranscriptArtifacts(messages, undefined, HEARTBEAT_PROMPT)).toEqual([
+      { role: "user", content: "what model are you" },
+      { role: "assistant", content: "notify=false" },
+    ]);
+  });
+
+  it("removes heartbeat-owned meaningful results and non-text assistant turns", () => {
     const meaningfulMessages = [
       { role: "user", content: HEARTBEAT_PROMPT },
       { role: "assistant", content: "Status HEARTBEAT_OK due to watchdog failure" },
     ];
-    expect(filterHeartbeatPairs(meaningfulMessages, undefined, HEARTBEAT_PROMPT)).toEqual(
-      meaningfulMessages,
-    );
+    expect(
+      filterHeartbeatTranscriptArtifacts(meaningfulMessages, undefined, HEARTBEAT_PROMPT),
+    ).toEqual([]);
 
     const nonTextMessages = [
       { role: "user", content: HEARTBEAT_PROMPT },
@@ -134,9 +330,9 @@ describe("filterHeartbeatPairs", () => {
         content: [{ type: "tool_use", id: "tool-1", name: "search", input: {} }],
       },
     ];
-    expect(filterHeartbeatPairs(nonTextMessages, undefined, HEARTBEAT_PROMPT)).toEqual(
-      nonTextMessages,
-    );
+    expect(
+      filterHeartbeatTranscriptArtifacts(nonTextMessages, undefined, HEARTBEAT_PROMPT),
+    ).toEqual([]);
   });
 
   it("keeps ordinary chats that mention the token", () => {
@@ -145,6 +341,8 @@ describe("filterHeartbeatPairs", () => {
       { role: "assistant", content: "HEARTBEAT_OK" },
     ];
 
-    expect(filterHeartbeatPairs(messages, undefined, HEARTBEAT_PROMPT)).toEqual(messages);
+    expect(filterHeartbeatTranscriptArtifacts(messages, undefined, HEARTBEAT_PROMPT)).toEqual(
+      messages,
+    );
   });
 });
