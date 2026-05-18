@@ -161,7 +161,7 @@ afterEach(() => {
 });
 
 describe("createCodexDynamicToolBridge", () => {
-  it("keeps subagent turn-control tools direct while deferring other OpenClaw tools", () => {
+  it("keeps turn-yield direct while deferring OpenClaw session spawn", () => {
     const bridge = createCodexDynamicToolBridge({
       tools: [
         createTool({ name: "web_search" }),
@@ -194,7 +194,11 @@ describe("createCodexDynamicToolBridge", () => {
       namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
       deferLoading: true,
     });
-    expectNoNamespace(sessionsSpawn);
+    expectDynamicSpec(sessionsSpawn, {
+      name: "sessions_spawn",
+      namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
+      deferLoading: true,
+    });
     expectNoNamespace(sessionsYield);
   });
 

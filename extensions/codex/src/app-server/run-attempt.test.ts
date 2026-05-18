@@ -1109,8 +1109,8 @@ describe("runCodexAppServerAttempt", () => {
     expect(webSearch?.deferLoading).toBe(true);
     expect(heartbeat?.namespace).toBe(CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE);
     expect(heartbeat?.deferLoading).toBe(true);
-    expect(sessionsSpawn).not.toHaveProperty("namespace");
-    expect(sessionsSpawn).not.toHaveProperty("deferLoading");
+    expect(sessionsSpawn?.namespace).toBe(CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE);
+    expect(sessionsSpawn?.deferLoading).toBe(true);
     expect(sessionsYield).not.toHaveProperty("namespace");
     expect(sessionsYield).not.toHaveProperty("deferLoading");
   });
