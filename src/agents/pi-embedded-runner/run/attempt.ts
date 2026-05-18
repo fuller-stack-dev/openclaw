@@ -3808,6 +3808,8 @@ export async function runEmbeddedAttempt(
               waitForSessionEvents: (sessionToDrain) =>
                 sessionLockController.waitForSessionEvents(sessionToDrain),
               releaseForPrompt: () => sessionLockController.releaseForPrompt(),
+              sessionFile: params.sessionFile,
+              withSessionWriteLock: (run) => sessionLockController.withSessionWriteLock(run),
             });
           }
 
