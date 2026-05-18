@@ -74,6 +74,15 @@ describe("OpenAI Codex routing policy", () => {
         harnessRuntime: "pi",
         config,
       }),
+    ).toBe("openai");
+    expect(
+      resolveSelectedOpenAIPiRuntimeProvider({
+        provider: "openai",
+        harnessRuntime: "pi",
+        authProfileProvider: "openai-codex",
+        authProfileId: "openai-codex:work",
+        config,
+      }),
     ).toBe("openai-codex");
     expect(
       resolveOpenAIRuntimeProviderForPi({

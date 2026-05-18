@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import "./test-helpers/fast-coding-tools.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AuthProfileStore } from "./auth-profiles.js";
 import {
   buildEmbeddedRunnerAssistant,
   cleanupEmbeddedPiRunnerTestWorkspace,
@@ -155,6 +156,8 @@ const installRunEmbeddedMocks = () => {
 
 let runEmbeddedPiAgent: typeof import("./pi-embedded-runner/run.js").runEmbeddedPiAgent;
 let SessionManager: typeof import("@earendil-works/pi-coding-agent").SessionManager;
+let clearRuntimeAuthProfileStoreSnapshots: typeof import("./auth-profiles.js").clearRuntimeAuthProfileStoreSnapshots;
+let replaceRuntimeAuthProfileStoreSnapshots: typeof import("./auth-profiles.js").replaceRuntimeAuthProfileStoreSnapshots;
 let e2eWorkspace: EmbeddedPiRunnerTestWorkspace | undefined;
 let agentDir: string;
 let workspaceDir: string;
@@ -167,17 +170,21 @@ beforeAll(async () => {
   installRunEmbeddedMocks();
   ({ runEmbeddedPiAgent } = await import("./pi-embedded-runner/run.js"));
   ({ SessionManager } = await import("@earendil-works/pi-coding-agent"));
+  ({ clearRuntimeAuthProfileStoreSnapshots, replaceRuntimeAuthProfileStoreSnapshots } =
+    await import("./auth-profiles.js"));
   e2eWorkspace = await createEmbeddedPiRunnerTestWorkspace("openclaw-embedded-agent-");
   ({ agentDir, workspaceDir } = e2eWorkspace);
 }, 180_000);
 
 afterAll(async () => {
+  clearRuntimeAuthProfileStoreSnapshots?.();
   await cleanupEmbeddedPiRunnerTestWorkspace(e2eWorkspace);
   e2eWorkspace = undefined;
 });
 
 beforeEach(() => {
   vi.useRealTimers();
+  clearRuntimeAuthProfileStoreSnapshots();
   runEmbeddedAttemptMock.mockReset();
   disposeSessionMcpRuntimeMock.mockReset();
   resolveSessionKeyForRequestMock.mockReset();
@@ -305,6 +312,100 @@ function firstRunEmbeddedAttemptParams(): { sessionKey?: string } {
   return firstMockCall(runEmbeddedAttemptMock, "embedded attempt")[0] as { sessionKey?: string };
 }
 
+function replaceAuthProfileStoreForTest(store: AuthProfileStore) {
+  replaceRuntimeAuthProfileStoreSnapshots([
+    { store: { version: 1, profiles: {} } },
+    { agentDir, store },
+  ]);
+}
+
+function createOpenAIPiRuntimeConfig(params?: { authOrder?: string[]; providerAuth?: "api-key" }) {
+  const baseConfig = createEmbeddedPiRunnerOpenAiConfig(["mock-1"]);
+  const openAIProvider = baseConfig.models?.providers?.openai;
+  if (!openAIProvider) {
+    throw new Error("expected OpenAI provider test config");
+  }
+  return {
+    ...baseConfig,
+    models: {
+      providers: {
+        openai: {
+          ...openAIProvider,
+          ...(params?.providerAuth ? { auth: params.providerAuth } : {}),
+          baseUrl: "https://api.openai.com/v1",
+        },
+      },
+    },
+    agents: {
+      defaults: {
+        models: {
+          "openai/mock-1": {
+            agentRuntime: { id: "pi" },
+          },
+        },
+      },
+    },
+    ...(params?.authOrder
+      ? {
+          auth: {
+            order: {
+              openai: params.authOrder,
+            },
+          },
+        }
+      : {}),
+  };
+}
+
+async function runOpenAIPiRuntimeTurn(
+  cfg: ReturnType<typeof createOpenAIPiRuntimeConfig>,
+  runId: string,
+) {
+  runEmbeddedAttemptMock.mockResolvedValueOnce(
+    makeEmbeddedRunnerAttempt({
+      assistantTexts: ["ok"],
+      lastAssistant: buildEmbeddedRunnerAssistant({
+        content: [{ type: "text", text: "ok" }],
+      }),
+    }),
+  );
+
+  await runEmbeddedPiAgent({
+    sessionId: runId,
+    sessionFile: nextSessionFile(),
+    workspaceDir,
+    config: cfg,
+    prompt: "hello",
+    provider: "openai",
+    model: "mock-1",
+    timeoutMs: 5_000,
+    agentDir,
+    runId: nextRunId(runId),
+    enqueue: immediateEnqueue,
+  });
+}
+
+function expectModelResolutionProvider(
+  callIndex: number,
+  provider: string,
+  cfg: ReturnType<typeof createOpenAIPiRuntimeConfig>,
+) {
+  expect(resolveModelAsyncMock).toHaveBeenNthCalledWith(
+    callIndex,
+    provider,
+    "mock-1",
+    agentDir,
+    cfg,
+    expect.objectContaining({ skipPiDiscovery: true }),
+  );
+}
+
+function expectAttemptModelProvider(provider: string) {
+  expect(
+    (firstRunEmbeddedAttemptParams() as { model?: { provider?: string } }).model?.provider,
+  ).toBe(provider);
+}
+
 describe("runEmbeddedPiAgent", () => {
   it("skips models.json generation when dynamic model resolution succeeds", async () => {
     const sessionFile = nextSessionFile();
@@ -344,79 +445,104 @@ describe("runEmbeddedPiAgent", () => {
   });
 
   it("resolves explicit OpenAI PI runs through Codex when auth order starts with Codex OAuth", async () => {
-    const sessionFile = nextSessionFile();
-    const baseConfig = createEmbeddedPiRunnerOpenAiConfig(["mock-1"]);
-    const openAIProvider = baseConfig.models?.providers?.openai;
-    if (!openAIProvider) {
-      throw new Error("expected OpenAI provider test config");
-    }
-    const cfg = {
-      ...baseConfig,
-      models: {
-        providers: {
-          openai: {
-            ...openAIProvider,
-            baseUrl: "https://api.openai.com/v1",
-          },
+    const cfg = createOpenAIPiRuntimeConfig({
+      authOrder: ["openai-codex:work", "openai:backup"],
+    });
+    replaceAuthProfileStoreForTest({
+      version: 1,
+      profiles: {
+        "openai-codex:work": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "access-token",
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
         },
       },
-      agents: {
-        defaults: {
-          models: {
-            "openai/mock-1": {
-              agentRuntime: { id: "pi" },
-            },
-          },
-        },
-      },
-      auth: {
-        order: {
-          openai: ["openai-codex:work", "openai:backup"],
-        },
-      },
-    };
-    runEmbeddedAttemptMock.mockResolvedValueOnce(
-      makeEmbeddedRunnerAttempt({
-        assistantTexts: ["ok"],
-        lastAssistant: buildEmbeddedRunnerAssistant({
-          content: [{ type: "text", text: "ok" }],
-        }),
-      }),
-    );
-
-    await runEmbeddedPiAgent({
-      sessionId: "codex-first-pi",
-      sessionFile,
-      workspaceDir,
-      config: cfg,
-      prompt: "hello",
-      provider: "openai",
-      model: "mock-1",
-      timeoutMs: 5_000,
-      agentDir,
-      runId: nextRunId("codex-first-pi"),
-      enqueue: immediateEnqueue,
     });
 
-    expect(resolveModelAsyncMock).toHaveBeenNthCalledWith(
-      1,
-      "openai",
-      "mock-1",
-      agentDir,
-      cfg,
-      expect.objectContaining({ skipPiDiscovery: true }),
-    );
-    expect(resolveModelAsyncMock).toHaveBeenNthCalledWith(
-      2,
-      "openai-codex",
-      "mock-1",
-      agentDir,
-      cfg,
-      expect.objectContaining({ skipPiDiscovery: true }),
-    );
-    expect(
-      (firstRunEmbeddedAttemptParams() as { model?: { provider?: string } }).model?.provider,
-    ).toBe("openai-codex");
+    await runOpenAIPiRuntimeTurn(cfg, "codex-first-pi");
+
+    expectModelResolutionProvider(1, "openai", cfg);
+    expectModelResolutionProvider(2, "openai-codex", cfg);
+    expectAttemptModelProvider("openai-codex");
+  });
+
+  it("does not route explicit OpenAI PI runs through stale Codex auth-order entries", async () => {
+    const cfg = createOpenAIPiRuntimeConfig({
+      authOrder: ["openai-codex:legacy-repro"],
+    });
+    replaceAuthProfileStoreForTest({
+      version: 1,
+      profiles: {
+        "openai-codex:legacy-repro": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "",
+          refresh: "",
+          expires: Date.now() + 60_000,
+        },
+      },
+    });
+
+    await runOpenAIPiRuntimeTurn(cfg, "stale-codex-first-pi");
+
+    expect(resolveModelAsyncMock).toHaveBeenCalledTimes(1);
+    expectModelResolutionProvider(1, "openai", cfg);
+    expectAttemptModelProvider("openai");
+  });
+
+  it("routes OpenAI PI runs through later eligible Codex auth-order entries", async () => {
+    const cfg = createOpenAIPiRuntimeConfig({
+      authOrder: ["openai-codex:legacy-repro", "openai-codex:work"],
+    });
+    replaceAuthProfileStoreForTest({
+      version: 1,
+      profiles: {
+        "openai-codex:legacy-repro": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "",
+          refresh: "",
+          expires: Date.now() + 60_000,
+        },
+        "openai-codex:work": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "access-token",
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
+        },
+      },
+    });
+
+    await runOpenAIPiRuntimeTurn(cfg, "later-codex-first-pi");
+
+    expectModelResolutionProvider(1, "openai", cfg);
+    expectModelResolutionProvider(2, "openai-codex", cfg);
+    expectAttemptModelProvider("openai-codex");
+  });
+
+  it("does not route OpenAI PI runs through stored Codex backup profiles", async () => {
+    const cfg = createOpenAIPiRuntimeConfig({ providerAuth: "api-key" });
+    replaceAuthProfileStoreForTest({
+      version: 1,
+      profiles: {
+        "openai-codex:work": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "access-token",
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
+        },
+      },
+    });
+
+    await runOpenAIPiRuntimeTurn(cfg, "stored-codex-backup-pi");
+
+    expect(resolveModelAsyncMock).toHaveBeenCalledTimes(1);
+    expectModelResolutionProvider(1, "openai", cfg);
+    expectAttemptModelProvider("openai");
   });
 
   it("backfills a trimmed session key from sessionId when the embedded run omits it", async () => {

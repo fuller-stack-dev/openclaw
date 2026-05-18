@@ -64,6 +64,7 @@ import {
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import {
   OPENAI_CODEX_PROVIDER_ID,
+  hasOpenAICodexAuthProfileOverride,
   listOpenAIAuthProfileProvidersForAgentRuntime,
   resolveContextConfigProviderForRuntime,
   resolveSelectedOpenAIPiRuntimeProvider,
@@ -90,6 +91,7 @@ import {
 } from "../pi-embedded-helpers.js";
 import { resolveProcessToolScopeKey } from "../pi-tools.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
+import { findNormalizedProviderValue } from "../provider-id.js";
 import { runAgentCleanupStep } from "../run-cleanup-timeout.js";
 import { buildAgentRuntimeAuthPlan } from "../runtime-plan/auth.js";
 import { buildAgentRuntimePlan } from "../runtime-plan/build.js";
@@ -205,6 +207,44 @@ function resolveAttemptDispatchApiKey(params: {
     return undefined;
   }
   return params.apiKeyInfo?.apiKey;
+}
+
+function resolveSelectedRuntimeAuthProfileId(params: {
+  provider: string;
+  harnessRuntime: string;
+  authProfileId?: string;
+  config: RunEmbeddedPiAgentParams["config"];
+  authStore: AuthProfileStore;
+}): string | undefined {
+  const requestedProfileId = params.authProfileId?.trim();
+  if (requestedProfileId) {
+    return requestedProfileId;
+  }
+  if (shouldPreferExplicitConfigApiKeyAuth(params.config, params.provider)) {
+    return undefined;
+  }
+  const firstAuthProvider = listOpenAIAuthProfileProvidersForAgentRuntime({
+    provider: params.provider,
+    harnessRuntime: params.harnessRuntime,
+    agentHarnessId: params.harnessRuntime,
+    config: params.config,
+  })[0];
+  if (firstAuthProvider !== OPENAI_CODEX_PROVIDER_ID) {
+    return undefined;
+  }
+  const configuredOrder = findNormalizedProviderValue(params.config?.auth?.order, params.provider);
+  const configuredProfileId = configuredOrder
+    ?.find((profileId) => typeof profileId === "string" && profileId.trim().length > 0)
+    ?.trim();
+  if (!hasOpenAICodexAuthProfileOverride(configuredProfileId)) {
+    return undefined;
+  }
+  const eligibleProfileIds = resolveAuthProfileOrder({
+    cfg: params.config,
+    store: params.authStore,
+    provider: OPENAI_CODEX_PROVIDER_ID,
+  });
+  return eligibleProfileIds[0]?.trim();
 }
 
 function resolveEmbeddedRunLaneTimeoutMs(timeoutMs: number): number | undefined {
@@ -611,12 +651,27 @@ export async function runEmbeddedPiAgent(
       });
       const pluginHarnessOwnsTransport = agentHarness.id !== "pi";
       const modelConfigProvider = provider;
+      const piRuntimeAuthProfileStore =
+        agentHarness.id === "pi"
+          ? ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+              allowKeychainPrompt: false,
+            })
+          : undefined;
+      const selectedRuntimeAuthProfileId = piRuntimeAuthProfileStore
+        ? resolveSelectedRuntimeAuthProfileId({
+            provider,
+            harnessRuntime: agentHarness.id,
+            authProfileId: params.authProfileId,
+            config: params.config,
+            authStore: piRuntimeAuthProfileStore,
+          })
+        : params.authProfileId;
       const selectedPiRuntimeProvider = resolveSelectedOpenAIPiRuntimeProvider({
         provider,
         harnessRuntime: agentHarness.id,
         agentHarnessId: agentHarness.id,
-        authProfileProvider: params.authProfileId?.split(":", 1)[0],
-        authProfileId: params.authProfileId,
+        authProfileProvider: selectedRuntimeAuthProfileId?.split(":", 1)[0],
+        authProfileId: selectedRuntimeAuthProfileId,
         config: params.config,
         workspaceDir: resolvedWorkspace,
       });
@@ -699,9 +754,10 @@ export async function runEmbeddedPiAgent(
                 externalCliProviderIds: [OPENAI_CODEX_PROVIDER_ID],
                 allowKeychainPrompt: false,
               })
-            : ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+            : (piRuntimeAuthProfileStore ??
+              ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
                 allowKeychainPrompt: false,
-              });
+              }));
       const attemptAuthProfileStore =
         pluginHarnessOwnsTransport && !pluginHarnessNeedsOpenClawAuthBootstrap
           ? ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {

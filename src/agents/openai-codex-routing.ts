@@ -187,11 +187,7 @@ export function resolveSelectedOpenAIPiRuntimeProvider(params: {
   if (runtime === "codex") {
     return OPENAI_CODEX_PROVIDER_ID;
   }
-  return runtime === "pi" &&
-    !params.authProfileId?.trim() &&
-    configuredOpenAIAuthOrderStartsWithCodexProfile(params.config)
-    ? OPENAI_CODEX_PROVIDER_ID
-    : params.provider;
+  return params.provider;
 }
 
 export function resolveContextConfigProviderForRuntime(params: {
