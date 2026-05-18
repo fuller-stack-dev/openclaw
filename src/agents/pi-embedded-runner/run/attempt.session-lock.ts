@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
+import { runWithSessionTranscriptWriteContext } from "../../session-transcript-write-context.js";
 import { isSessionWriteLockTimeoutError } from "../../session-write-lock-error.js";
 import type { acquireSessionWriteLock } from "../../session-write-lock.js";
 
@@ -376,6 +377,8 @@ export function installPromptSubmissionLockRelease(params: {
   session: unknown;
   waitForSessionEvents: (session: unknown) => Promise<void>;
   releaseForPrompt: () => Promise<void>;
+  sessionFile?: string;
+  withSessionWriteLock?: <T>(run: () => Promise<T> | T) => Promise<T>;
 }): void {
   const agent = (params.session as SessionWithAgentPrompt).agent;
   if (typeof agent?.streamFn !== "function") {
@@ -389,6 +392,15 @@ export function installPromptSubmissionLockRelease(params: {
   const wrappedStreamFn: PromptReleaseStreamFn = async (...args: unknown[]) => {
     await params.waitForSessionEvents(params.session);
     await params.releaseForPrompt();
+    if (params.sessionFile && params.withSessionWriteLock) {
+      return await runWithSessionTranscriptWriteContext(
+        {
+          sessionFile: params.sessionFile,
+          withSessionWriteLock: params.withSessionWriteLock,
+        },
+        () => originalStreamFn(...args),
+      );
+    }
     return await originalStreamFn(...args);
   };
   wrappedStreamFn["__openclawSessionLockPromptReleaseInstalled"] = true;

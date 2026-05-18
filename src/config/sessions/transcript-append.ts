@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { withActiveSessionTranscriptWriteLock } from "../../agents/session-transcript-write-context.js";
 import {
   acquireSessionWriteLock,
   resolveSessionWriteLockOptions,
@@ -255,7 +256,9 @@ export async function appendSessionTranscriptMessage<TMessage>(
   params: AppendSessionTranscriptMessageParams<TMessage>,
 ): Promise<{ messageId: string; message: TMessage }> {
   return await withTranscriptAppendQueue(params.transcriptPath, () =>
-    appendSessionTranscriptMessageLocked(params),
+    withActiveSessionTranscriptWriteLock(params.transcriptPath, () =>
+      appendSessionTranscriptMessageLocked(params),
+    ),
   );
 }
 
