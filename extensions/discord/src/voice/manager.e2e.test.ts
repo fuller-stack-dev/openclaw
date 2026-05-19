@@ -21,6 +21,7 @@ const {
   createRealtimeVoiceBridgeSessionMock,
   realtimeSessionMock,
   decodeOpusStreamChunksMock,
+  updateVoiceStateMock,
 } = vi.hoisted(() => {
   type EventHandler = (...args: unknown[]) => unknown;
   type MockConnection = {
@@ -142,6 +143,7 @@ const {
     createRealtimeVoiceBridgeSessionMock: vi.fn((_params?: unknown) => realtimeSessionMock),
     realtimeSessionMock,
     decodeOpusStreamChunksMock: vi.fn(),
+    updateVoiceStateMock: vi.fn(),
   };
 });
 
@@ -231,6 +233,9 @@ let managerModule: typeof import("./manager.js");
 
 function createClient() {
   return {
+    rest: {
+      get: vi.fn(),
+    },
     fetchChannel: vi.fn(async (channelId: string) => ({
       id: channelId,
       guildId: "g1",
@@ -243,6 +248,9 @@ function createClient() {
     })),
     getPlugin: vi.fn(() => ({
       getGatewayAdapterCreator: vi.fn(() => vi.fn()),
+      getGateway: vi.fn(() => ({
+        updateVoiceState: updateVoiceStateMock,
+      })),
     })),
     fetchMember: vi.fn(),
     fetchUser: vi.fn(),
@@ -281,6 +289,7 @@ describe("DiscordVoiceManager", () => {
     textToSpeechMock.mockReset();
     textToSpeechMock.mockResolvedValue({ success: true, audioPath: "/tmp/voice.mp3" });
     logVerboseMock.mockClear();
+    updateVoiceStateMock.mockClear();
     createAudioResourceMock.mockClear();
     realtimeSessionMock.close.mockClear();
     realtimeSessionMock.connect.mockClear();
@@ -624,6 +633,173 @@ describe("DiscordVoiceManager", () => {
 
     expect(result.ok).toBe(true);
     expectConnectedStatus(manager, "1001");
+  });
+
+  it("follows configured users into voice channels", async () => {
+    const manager = createManager({
+      voice: {
+        enabled: true,
+        mode: "stt-tts",
+        followUsers: ["discord:u-owner"],
+      },
+    });
+
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: "1001",
+    } as never);
+
+    expect(joinVoiceChannelMock).toHaveBeenCalledTimes(1);
+    expectConnectedStatus(manager, "1001");
+  });
+
+  it("does not follow configured users when followUsersEnabled is false", async () => {
+    const manager = createManager({
+      voice: {
+        enabled: true,
+        mode: "stt-tts",
+        followUsersEnabled: false,
+        followUsers: ["u-owner"],
+      },
+    });
+
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: "1001",
+    } as never);
+
+    expect(joinVoiceChannelMock).not.toHaveBeenCalled();
+    expect(manager.status()).toEqual([]);
+  });
+
+  it("disconnects stale bot voice state when followed users are absent during reconciliation", async () => {
+    const client = createClient();
+    client.rest.get.mockRejectedValueOnce(new Error("Unknown Voice State")).mockResolvedValueOnce({
+      guild_id: "g1",
+      user_id: "bot-user",
+      channel_id: "1001",
+    });
+    const manager = createManager(
+      {
+        guilds: { g1: {} },
+        voice: {
+          enabled: true,
+          mode: "stt-tts",
+          followUsers: ["u-owner"],
+        },
+      },
+      client,
+    );
+    manager.setBotUserId("bot-user");
+
+    await manager.autoJoin();
+    await manager.destroy();
+
+    expect(updateVoiceStateMock).toHaveBeenCalledWith({
+      guild_id: "g1",
+      channel_id: null,
+      self_mute: false,
+      self_deaf: false,
+    });
+  });
+
+  it("moves with configured followed users", async () => {
+    const manager = createManager({
+      voice: {
+        enabled: true,
+        mode: "stt-tts",
+        followUsers: ["u-owner"],
+      },
+    });
+
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: "1001",
+    } as never);
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: "1002",
+    } as never);
+
+    expect(joinVoiceChannelMock).toHaveBeenCalledTimes(2);
+    expectConnectedStatus(manager, "1002");
+  });
+
+  it("preserves follow ownership when a bot voice move rebuilds the session", async () => {
+    const manager = createManager({
+      voice: {
+        enabled: true,
+        mode: "stt-tts",
+        followUsers: ["u-owner"],
+      },
+    });
+    manager.setBotUserId("bot-user");
+
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: "1001",
+    } as never);
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "bot-user",
+      channel_id: "1002",
+    } as never);
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: null,
+    } as never);
+
+    expect(joinVoiceChannelMock).toHaveBeenCalledTimes(2);
+    expect(manager.status()).toEqual([]);
+  });
+
+  it("leaves when a followed user disconnects", async () => {
+    const manager = createManager({
+      voice: {
+        enabled: true,
+        mode: "stt-tts",
+        followUsers: ["u-owner"],
+      },
+    });
+
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: "1001",
+    } as never);
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: null,
+    } as never);
+
+    expect(manager.status()).toEqual([]);
+  });
+
+  it("does not follow configured users into disallowed channels", async () => {
+    const manager = createManager({
+      voice: {
+        enabled: true,
+        mode: "stt-tts",
+        followUsers: ["u-owner"],
+        allowedChannels: [{ guildId: "g1", channelId: "1001" }],
+      },
+    });
+
+    await manager.handleVoiceStateUpdate({
+      guild_id: "g1",
+      user_id: "u-owner",
+      channel_id: "1002",
+    } as never);
+
+    expect(joinVoiceChannelMock).not.toHaveBeenCalled();
+    expect(manager.status()).toEqual([]);
   });
 
   it("treats an empty allowed voice channel list as deny-all", async () => {
