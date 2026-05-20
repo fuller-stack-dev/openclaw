@@ -231,17 +231,35 @@ vi.mock("../runtime.js", () => ({
 
 let managerModule: typeof import("./manager.js");
 
+function createVoiceChannelInfo(
+  channelId: string,
+  guildId = "g1",
+  guildName = "Guild One",
+): {
+  id: string;
+  guildId: string;
+  guild: { id: string; name: string };
+  type: ChannelType;
+} {
+  return {
+    id: channelId,
+    guildId,
+    guild: { id: guildId, name: guildName },
+    type: ChannelType.GuildVoice,
+  };
+}
+
+type VoiceChannelInfo = ReturnType<typeof createVoiceChannelInfo>;
+
 function createClient() {
   return {
     rest: {
       get: vi.fn(),
     },
-    fetchChannel: vi.fn(async (channelId: string) => ({
-      id: channelId,
-      guildId: "g1",
-      guild: { id: "g1", name: "Guild One" },
-      type: ChannelType.GuildVoice,
-    })),
+    fetchChannel: vi.fn(
+      async (channelId: string): Promise<VoiceChannelInfo | null> =>
+        createVoiceChannelInfo(channelId),
+    ),
     fetchGuild: vi.fn(async (guildId: string) => ({
       id: guildId,
       name: "Guild One",
