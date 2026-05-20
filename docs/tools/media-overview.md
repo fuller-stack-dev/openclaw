@@ -98,9 +98,11 @@ For async tools, OpenClaw submits the request to the provider, returns a task
 id immediately, and tracks the job in the task ledger. The agent continues
 responding to other messages while the job runs. When the provider finishes,
 OpenClaw wakes the agent with the generated media paths so it can tell the
-user and relay the result through the message tool. OpenClaw treats missing
-message-tool delivery evidence as a failed completion attempt and does not
-auto-post the generated media as a fallback.
+user and relay the result through the message tool. If the active wake and
+requester-agent handoff miss the generated media, OpenClaw attempts one
+direct generated-media fallback to the original chat and mirrors that delivery
+into the session. If the direct fallback cannot confirm delivery, OpenClaw
+marks the completion handoff as failed.
 
 ## Speech-to-text and Voice Call
 

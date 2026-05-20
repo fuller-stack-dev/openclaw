@@ -12,7 +12,8 @@ type RecentMediaGenerationTaskStart = {
   requestKey?: string;
 };
 
-const recentMediaGenerationTaskStarts = new Map<string, RecentMediaGenerationTaskStart>();
+const MAX_RECENT_MEDIA_GENERATION_TASK_STARTS_PER_KEY = 32;
+const recentMediaGenerationTaskStarts = new Map<string, RecentMediaGenerationTaskStart[]>();
 
 export function buildMediaGenerationRequestKey(value: Record<string, unknown>): string {
   return stableStringify(value);
@@ -45,17 +46,26 @@ function isRecentMediaGenerationTaskRecord(params: {
   return Number.isFinite(activityAt) && params.nowMs - activityAt <= params.maxAgeMs;
 }
 
+function getMediaGenerationTaskActivityAt(task: TaskRecord): number {
+  return task.endedAt ?? task.lastEventAt ?? task.startedAt ?? task.createdAt;
+}
+
 function pruneRecentMediaGenerationTaskStarts(params: {
   maxAgeMs: number;
   nowMs: number;
   preserveKey?: string;
 }) {
-  for (const [key, entry] of recentMediaGenerationTaskStarts.entries()) {
+  for (const [key, entries] of recentMediaGenerationTaskStarts.entries()) {
     if (params.preserveKey === key) {
       continue;
     }
-    if (!isRecentMediaGenerationTaskRecord({ task: entry.task, ...params })) {
+    const freshEntries = entries.filter((entry) =>
+      isRecentMediaGenerationTaskRecord({ task: entry.task, ...params }),
+    );
+    if (freshEntries.length === 0) {
       recentMediaGenerationTaskStarts.delete(key);
+    } else if (freshEntries.length !== entries.length) {
+      recentMediaGenerationTaskStarts.set(key, freshEntries);
     }
   }
 }
@@ -113,6 +123,22 @@ function findPersistedTaskForRecentMediaGenerationStart(params: {
   });
 }
 
+function removeRecentMediaGenerationTaskStart(
+  key: string,
+  entryToRemove: RecentMediaGenerationTaskStart,
+) {
+  const entries = recentMediaGenerationTaskStarts.get(key);
+  if (!entries?.length) {
+    return;
+  }
+  const filtered = entries.filter((entry) => entry !== entryToRemove);
+  if (filtered.length > 0) {
+    recentMediaGenerationTaskStarts.set(key, filtered);
+  } else {
+    recentMediaGenerationTaskStarts.delete(key);
+  }
+}
+
 export function isActiveMediaGenerationTask(params: {
   task: TaskRecord;
   taskKind: string;
@@ -143,7 +169,7 @@ export function recordRecentMediaGenerationTaskStartForSession(params: {
     return;
   }
   const nowMs = params.nowMs ?? Date.now();
-  recentMediaGenerationTaskStarts.set(key, {
+  const entry: RecentMediaGenerationTaskStart = {
     requestKey: normalizeOptionalString(params.requestKey),
     task: {
       taskId: params.taskId,
@@ -165,7 +191,24 @@ export function recordRecentMediaGenerationTaskStartForSession(params: {
       lastEventAt: nowMs,
       progressSummary: params.progressSummary,
     },
+  };
+  const entries = (recentMediaGenerationTaskStarts.get(key) ?? []).filter((existing) => {
+    if (existing.task.taskId === params.taskId) {
+      return false;
+    }
+    if (params.runId && existing.task.runId === params.runId) {
+      return false;
+    }
+    return true;
   });
+  entries.unshift(entry);
+  entries.sort(
+    (a, b) => getMediaGenerationTaskActivityAt(b.task) - getMediaGenerationTaskActivityAt(a.task),
+  );
+  recentMediaGenerationTaskStarts.set(
+    key,
+    entries.slice(0, MAX_RECENT_MEDIA_GENERATION_TASK_STARTS_PER_KEY),
+  );
 }
 
 export function findRecentStartedMediaGenerationTaskForSession(params: {
@@ -173,6 +216,7 @@ export function findRecentStartedMediaGenerationTaskForSession(params: {
   taskKind: string;
   sourcePrefix: string;
   maxAgeMs: number;
+  taskLabel?: string;
   requestKey?: string;
   nowMs?: number;
 }): TaskRecord | undefined {
@@ -184,43 +228,54 @@ export function findRecentStartedMediaGenerationTaskForSession(params: {
   const nowMs = params.nowMs ?? Date.now();
   const maxAgeMs = Math.max(0, Math.floor(params.maxAgeMs));
   pruneRecentMediaGenerationTaskStarts({ maxAgeMs, nowMs, preserveKey: key });
-  const entry = recentMediaGenerationTaskStarts.get(key);
-  const task = entry?.task;
-  if (!entry || !task) {
+  const entries = recentMediaGenerationTaskStarts.get(key);
+  if (!entries?.length) {
     return undefined;
   }
-  const persistedTask = findPersistedTaskForRecentMediaGenerationStart({
-    sessionKey,
-    cachedTask: task,
-    taskKind: params.taskKind,
-    sourcePrefix: params.sourcePrefix,
-  });
-  if (persistedTask) {
-    if (isTaskStillBlockingDuplicateGuard(persistedTask)) {
-      return persistedTask;
+  for (const entry of entries) {
+    const task = entry.task;
+    if (params.taskLabel && !mediaGenerationTaskLabelMatches(task, params.taskLabel)) {
+      continue;
     }
-    if (persistedTask.status === "succeeded" && entry.requestKey && !params.requestKey) {
-      return undefined;
+    const persistedTask = findPersistedTaskForRecentMediaGenerationStart({
+      sessionKey,
+      cachedTask: task,
+      taskKind: params.taskKind,
+      sourcePrefix: params.sourcePrefix,
+    });
+    if (persistedTask) {
+      if (params.taskLabel && !mediaGenerationTaskLabelMatches(persistedTask, params.taskLabel)) {
+        continue;
+      }
+      if (isTaskStillBlockingDuplicateGuard(persistedTask)) {
+        return persistedTask;
+      }
+      if (persistedTask.status === "succeeded" && entry.requestKey && !params.requestKey) {
+        continue;
+      }
+      if (
+        isTaskRecentSuccessfulDuplicate({
+          task: persistedTask,
+          requestKey: params.requestKey,
+          cachedRequestKey: entry.requestKey,
+          maxAgeMs,
+          nowMs,
+        })
+      ) {
+        return persistedTask;
+      }
+      if (!isRecentMediaGenerationTaskRecord({ task: persistedTask, maxAgeMs, nowMs })) {
+        removeRecentMediaGenerationTaskStart(key, entry);
+      }
+      continue;
     }
-    if (
-      isTaskRecentSuccessfulDuplicate({
-        task: persistedTask,
-        requestKey: params.requestKey,
-        cachedRequestKey: entry.requestKey,
-        maxAgeMs,
-        nowMs,
-      })
-    ) {
-      return persistedTask;
+    if (!isRecentMediaGenerationTaskRecord({ task, maxAgeMs, nowMs })) {
+      removeRecentMediaGenerationTaskStart(key, entry);
+      continue;
     }
-    recentMediaGenerationTaskStarts.delete(key);
-    return undefined;
+    return { ...task };
   }
-  if (!isRecentMediaGenerationTaskRecord({ task, maxAgeMs, nowMs })) {
-    recentMediaGenerationTaskStarts.delete(key);
-    return undefined;
-  }
-  return { ...task };
+  return undefined;
 }
 
 export function resetRecentMediaGenerationDuplicateGuardsForTests() {
@@ -245,13 +300,23 @@ export function findActiveMediaGenerationTaskForSession(params: {
   sourcePrefix: string;
   taskLabel?: string;
 }): TaskRecord | undefined {
+  const matches = listActiveMediaGenerationTasksForSession(params);
+  return matches.find((task) => task.status === "running") ?? matches[0];
+}
+
+export function listActiveMediaGenerationTasksForSession(params: {
+  sessionKey?: string;
+  taskKind: string;
+  sourcePrefix: string;
+  taskLabel?: string;
+}): TaskRecord[] {
   const sessionKey = normalizeOptionalString(params.sessionKey);
   if (!sessionKey) {
-    return undefined;
+    return [];
   }
   const taskLabel = normalizeOptionalString(params.taskLabel);
   const sourcePrefix = normalizeOptionalString(params.sourcePrefix);
-  const matches = listFreshTasksForOwnerKey(sessionKey).filter((task) => {
+  return listFreshTasksForOwnerKey(sessionKey).filter((task) => {
     if (
       task.runtime !== "cli" ||
       task.scopeKind !== "session" ||
@@ -268,7 +333,6 @@ export function findActiveMediaGenerationTaskForSession(params: {
     }
     return true;
   });
-  return matches.find((task) => task.status === "running") ?? matches[0];
 }
 
 export function findDuplicateGuardMediaGenerationTaskForSession(params: {
@@ -285,6 +349,7 @@ export function findDuplicateGuardMediaGenerationTaskForSession(params: {
       sessionKey: params.sessionKey,
       taskKind: params.taskKind,
       sourcePrefix: params.sourcePrefix,
+      taskLabel: params.taskLabel,
     }) ??
     undefined
   );

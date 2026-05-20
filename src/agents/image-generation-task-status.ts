@@ -7,6 +7,7 @@ import {
   findDuplicateGuardMediaGenerationTaskForSession,
   getMediaGenerationTaskProviderId,
   isActiveMediaGenerationTask,
+  listActiveMediaGenerationTasksForSession,
 } from "./media-generation-task-status-shared.js";
 
 export const IMAGE_GENERATION_TASK_KIND = "image_generation";
@@ -33,6 +34,14 @@ export function findActiveImageGenerationTaskForSession(
     taskKind: IMAGE_GENERATION_TASK_KIND,
     sourcePrefix: IMAGE_GENERATION_SOURCE_PREFIX,
     taskLabel: params?.prompt,
+  });
+}
+
+export function listActiveImageGenerationTasksForSession(sessionKey?: string): TaskRecord[] {
+  return listActiveMediaGenerationTasksForSession({
+    sessionKey,
+    taskKind: IMAGE_GENERATION_TASK_KIND,
+    sourcePrefix: IMAGE_GENERATION_SOURCE_PREFIX,
   });
 }
 
@@ -69,6 +78,30 @@ export function buildImageGenerationTaskStatusText(
     completionLabel: "image",
     duplicateGuard: params?.duplicateGuard,
   });
+}
+
+export function buildImageGenerationTasksStatusText(tasks: readonly TaskRecord[]): string {
+  if (tasks.length === 0) {
+    return "No active image generation task is currently running for this session.";
+  }
+  if (tasks.length === 1) {
+    return buildImageGenerationTaskStatusText(tasks[0]!);
+  }
+  const lines = [
+    `${tasks.length} active image generation tasks are currently running for this session.`,
+    ...tasks.map((task) => {
+      const provider = getImageGenerationTaskProviderId(task);
+      const prompt = task.task.trim();
+      const parts = [
+        `- Task ${task.taskId} is ${task.status}${provider ? ` with ${provider}` : ""}.`,
+        prompt ? `Prompt: ${prompt}.` : null,
+        task.progressSummary ? `Progress: ${task.progressSummary}.` : null,
+      ].filter((entry): entry is string => Boolean(entry));
+      return parts.join(" ");
+    }),
+    'Use `action:"status"` for progress; wait for each completion event instead of retrying the same request.',
+  ];
+  return lines.join("\n");
 }
 
 export function buildActiveImageGenerationTaskPromptContextForSession(

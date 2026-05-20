@@ -5,8 +5,10 @@ import type { AuthProfileStore } from "../auth-profiles/types.js";
 import {
   buildImageGenerationTaskStatusDetails,
   buildImageGenerationTaskStatusText,
+  buildImageGenerationTasksStatusText,
   findActiveImageGenerationTaskForSession,
   findDuplicateGuardImageGenerationTaskForSession,
+  listActiveImageGenerationTasksForSession,
 } from "../image-generation-task-status.js";
 import {
   createMediaGenerateProviderListActionResult,
@@ -88,6 +90,19 @@ const imageGenerateTaskStatusActions = createMediaGenerateTaskStatusActions({
 export function createImageGenerateStatusActionResult(
   sessionKey?: string,
 ): ImageGenerateActionResult {
+  const activeTasks = listActiveImageGenerationTasksForSession(sessionKey);
+  if (activeTasks.length > 1) {
+    return {
+      content: [{ type: "text", text: buildImageGenerationTasksStatusText(activeTasks) }],
+      details: {
+        action: "status",
+        async: true,
+        active: true,
+        existingTask: true,
+        tasks: activeTasks.map((task) => buildImageGenerationTaskStatusDetails(task).task),
+      },
+    };
+  }
   return imageGenerateTaskStatusActions.createStatusActionResult(sessionKey);
 }
 
