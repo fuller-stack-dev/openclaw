@@ -8,12 +8,14 @@ import {
   resolveControlUiHandoffTarget,
   waitForControlUiDocument,
 } from "./control-ui-handoff.js";
+import { openDashboardInTerminal } from "./dashboard-terminal-browser.js";
 import { ensureGatewayReadyForOperation } from "./gateway-readiness.js";
 import { detectBrowserOpenSupport, formatControlUiSshHint, openUrl } from "./onboard-helpers.js";
 
 type DashboardOptions = {
   json?: boolean;
   noOpen?: boolean;
+  terminal?: boolean;
   yes?: boolean;
 };
 
@@ -121,6 +123,11 @@ export async function dashboardCommand(
   runtime: RuntimeEnv = defaultRuntime,
   options: DashboardOptions = {},
 ) {
+  if (options.terminal && (options.json || options.noOpen)) {
+    runtime.error("--terminal cannot be combined with --json or --no-open.");
+    runtime.exit(1);
+    return;
+  }
   if (options.json) {
     await dashboardJsonCommand(runtime);
     return;
@@ -192,6 +199,27 @@ export async function dashboardCommand(
 
   const copied = await copyToClipboard(browserUrl).catch(() => false);
   runtime.log(copied ? "Copied to clipboard." : "Copy to clipboard unavailable.");
+
+  if (options.terminal) {
+    runtime.log("Opening the Control UI in terminal-browser. Press Ctrl+Q to close it.");
+    const terminalResult = await openDashboardInTerminal(browserUrl);
+    if (!terminalResult.ok) {
+      runtime.error(terminalResult.error);
+      if (copied) {
+        runtime.log("Open the one-time pairing URL copied to your clipboard in another browser.");
+      } else if (includeTokenInUrl) {
+        runtime.log(
+          "Append your gateway token (from OPENCLAW_GATEWAY_TOKEN or gateway.auth.token) as a URL fragment with key `token` to the Dashboard URL above.",
+        );
+      } else {
+        runtime.log(
+          "Run `openclaw dashboard --json` and open its `browserUrl` within ten minutes.",
+        );
+      }
+      runtime.exit(1);
+    }
+    return;
+  }
 
   let opened = false;
   let hint: string | undefined;

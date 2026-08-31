@@ -13,6 +13,7 @@ const issueDeviceBootstrapTokenMock = vi.hoisted(() => vi.fn());
 const resolveSecretRefValuesMock = vi.hoisted(() => vi.fn());
 const ensureGatewayReadyForOperationMock = vi.hoisted(() => vi.fn());
 const waitForControlUiDocumentMock = vi.hoisted(() => vi.fn());
+const openDashboardInTerminalMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../config/config.js", () => ({
   readConfigFileSnapshot: readConfigFileSnapshotMock,
@@ -41,6 +42,10 @@ vi.mock("./gateway-readiness.js", () => ({
 vi.mock("./control-ui-handoff.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./control-ui-handoff.js")>()),
   waitForControlUiDocument: waitForControlUiDocumentMock,
+}));
+
+vi.mock("./dashboard-terminal-browser.js", () => ({
+  openDashboardInTerminal: openDashboardInTerminalMock,
 }));
 
 vi.mock("../secrets/resolve.js", () => ({
@@ -113,6 +118,8 @@ describe("dashboardCommand", () => {
     });
     waitForControlUiDocumentMock.mockReset();
     waitForControlUiDocumentMock.mockResolvedValue({ ready: true });
+    openDashboardInTerminalMock.mockReset();
+    openDashboardInTerminalMock.mockResolvedValue({ ok: true, value: undefined });
     delete process.env.OPENCLAW_GATEWAY_TOKEN;
     delete process.env.CUSTOM_GATEWAY_TOKEN;
   });
@@ -164,6 +171,54 @@ describe("dashboardCommand", () => {
       "Opened in your browser. Keep that tab to control OpenClaw.",
     );
   });
+
+  it("opens the paired Control UI in terminal-browser app mode", async () => {
+    mockSnapshot("abc123");
+    copyToClipboardMock.mockResolvedValue(true);
+
+    await dashboardCommand(runtime, { terminal: true });
+
+    expect(openDashboardInTerminalMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:18789/#bootstrapToken=browser-bootstrap&bootstrapProfile=owner",
+    );
+    expect(detectBrowserOpenSupportMock).not.toHaveBeenCalled();
+    expect(openUrlMock).not.toHaveBeenCalled();
+    expect(runtime.log).toHaveBeenCalledWith(
+      "Opening the Control UI in terminal-browser. Press Ctrl+Q to close it.",
+    );
+  });
+
+  it("keeps the copied pairing link when terminal-browser cannot start", async () => {
+    mockSnapshot("abc123");
+    copyToClipboardMock.mockResolvedValue(true);
+    openDashboardInTerminalMock.mockResolvedValue({
+      ok: false,
+      error: "terminal-browser does not support this terminal.",
+    });
+
+    await dashboardCommand(runtime, { terminal: true });
+
+    expect(runtime.error).toHaveBeenCalledWith("terminal-browser does not support this terminal.");
+    expect(runtime.log).toHaveBeenCalledWith(
+      "Open the one-time pairing URL copied to your clipboard in another browser.",
+    );
+    expect(runtime.exit).toHaveBeenCalledWith(1);
+    expect(openUrlMock).not.toHaveBeenCalled();
+  });
+
+  it.each([{ json: true }, { noOpen: true }])(
+    "rejects terminal mode when another delivery mode is selected",
+    async (options) => {
+      await dashboardCommand(runtime, { terminal: true, ...options });
+
+      expect(runtime.error).toHaveBeenCalledWith(
+        "--terminal cannot be combined with --json or --no-open.",
+      );
+      expect(runtime.exit).toHaveBeenCalledWith(1);
+      expect(readConfigFileSnapshotMock).not.toHaveBeenCalled();
+      expect(openDashboardInTerminalMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("never logs the gateway token in the dashboard URL (CVE regression)", async () => {
     const secretToken = "super-secret-bearer-token";
