@@ -4,6 +4,8 @@
  */
 /** Synthetic provider/backend id for Claude Code CLI-backed Anthropic models. */
 export const CLAUDE_CLI_BACKEND_ID = "claude-cli";
+/** Non-secret marker telling OpenClaw that the installed Claude CLI owns auth. */
+export const CLAUDE_CLI_NATIVE_AUTH_MARKER = ["openclaw", "claude-cli-native-auth"].join(":");
 /** Non-secret marker for Claude Code settings.json apiKeyHelper auth. */
 export const CLAUDE_CLI_API_KEY_HELPER_AUTH_MARKER = ["openclaw", "claude-cli-api-key-helper"].join(
   ":",

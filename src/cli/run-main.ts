@@ -1446,33 +1446,13 @@ async function runCliWithPreparedOutputMode(
       if (bareRootLaunchTarget.kind === "tui") {
         if (!process.stdin.isTTY || !process.stdout.isTTY) {
           console.error(
-            "OpenClaw TUI needs an interactive TTY. Use `openclaw agent --local ...` for automation.",
+            "OpenClaw terminal Control UI needs an interactive TTY. Use `openclaw agent --local ...` for automation.",
           );
           process.exitCode = 1;
           return;
         }
-        const { runTui } = await import("../tui/tui.js");
-        // This TUI now shares the CLI process, so keep its final exit fallback armed
-        // in case imported runtime handles survive the normal teardown.
-        await runTui({
-          ...(bareRootLaunchTarget.local
-            ? { deliver: false, local: true }
-            : {
-                deliver: false,
-                config: bareRootLaunchTarget.config,
-                boundGateway: {
-                  url: bareRootLaunchTarget.gatewayUrl,
-                  ...(bareRootLaunchTarget.token ? { token: bareRootLaunchTarget.token } : {}),
-                  ...(bareRootLaunchTarget.password
-                    ? { password: bareRootLaunchTarget.password }
-                    : {}),
-                  ...(bareRootLaunchTarget.tlsFingerprint
-                    ? { tlsFingerprint: bareRootLaunchTarget.tlsFingerprint }
-                    : {}),
-                },
-              }),
-          forceProcessExitOnReturn: true,
-        });
+        const { runTuiCliAction } = await import("./tui-cli.js");
+        await runTuiCliAction(undefined, { yes: true });
         return;
       }
     }

@@ -493,10 +493,16 @@ export async function setupWizardCommand(
     );
   }
   const flow = opts.flow === "manual" ? ("advanced" as const) : opts.flow;
-  const normalizedOpts =
+  const normalizedInputOpts =
     normalizedAuthChoice === opts.authChoice && flow === opts.flow
       ? opts
       : { ...opts, authChoice: normalizedAuthChoice, flow };
+  // This experiment replaces the browser-first handoff with the paired terminal
+  // Control UI for every interactive onboarding entrypoint.
+  const normalizedOpts =
+    normalizedInputOpts.nonInteractive || normalizedInputOpts.tui === true
+      ? normalizedInputOpts
+      : { ...normalizedInputOpts, tui: true };
   if (normalizedOpts.agentName !== undefined) {
     const { validateFirstOnboardingAgentName } = await import("./onboard-agent.js");
     const error = validateFirstOnboardingAgentName(normalizedOpts.agentName);

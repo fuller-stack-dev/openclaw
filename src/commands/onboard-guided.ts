@@ -696,30 +696,12 @@ async function persistAccessMode(mode: GuidedAccessMode): Promise<void> {
   });
 }
 
-async function launchHatchTui(workspace: string): Promise<void> {
-  const [{ launchTuiCli }, { DEFAULT_BOOTSTRAP_FILENAME }, { restoreTerminalState }, fs, path] =
-    await Promise.all([
-      import("../tui/tui-launch.js"),
-      import("../agents/workspace.js"),
-      import("../../packages/terminal-core/src/restore.js"),
-      import("node:fs"),
-      import("node:path"),
-    ]);
-  const hasBootstrap = fs.existsSync(path.join(workspace, DEFAULT_BOOTSTRAP_FILENAME));
-  restoreTerminalState("guided hatch tui", { resumeStdinIfPaused: false });
-  try {
-    // No timeoutMs: the run-level TUI timeout overrides the configured agent
-    // timeout for every turn in the session, not just the hatch message.
-    await launchTuiCli({
-      local: true,
-      deliver: false,
-      // Seed the first-run hatch only when the workspace bootstrap exists;
-      // re-runs against an established agent open a plain chat instead.
-      ...(hasBootstrap ? { message: t("wizard.finalize.bootstrapHatchMessage") } : {}),
-    });
-  } finally {
-    restoreTerminalState("post guided hatch tui", { resumeStdinIfPaused: false });
-  }
+async function launchHatchTui(_workspace: string): Promise<void> {
+  const [{ dashboardCommand }, { defaultRuntime }] = await Promise.all([
+    import("./dashboard.js"),
+    import("../runtime.js"),
+  ]);
+  await dashboardCommand(defaultRuntime, { terminal: true, yes: true });
 }
 
 export async function runGuidedOnboarding(
