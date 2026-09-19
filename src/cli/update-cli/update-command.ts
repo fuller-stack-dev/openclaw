@@ -22,6 +22,7 @@ import {
   withUpdateCommandExecutor,
 } from "./update-command-executor.js";
 import type { InitializedUpdate } from "./update-command-initialization.js";
+import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
 import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
 import {
   admitUpdateCommandRun,
@@ -31,6 +32,7 @@ import {
   prepareUpdateCommand,
   prepareMutableUpdateRuntime,
   resolveUpdateCommandAdmissionEnv,
+  resolveUpdateCommandAdmissionRoot,
   withUpdatePreviewSignals,
 } from "./update-command-run.js";
 import { preflightUpdateCommandSchemas, previewUpdateCommand } from "./update-command-schema.js";
@@ -40,7 +42,6 @@ import {
   resolveUpdateTargetEnv,
   withUpdateInProgressEnv,
 } from "./update-command-service-env.js";
-import { resolvePackageRuntimePreflight } from "./update-command-service-plan.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 import { resolveFreshUpdateMetadata, resolveUpdateCommandTarget } from "./update-command-target.js";
 import {
@@ -79,7 +80,7 @@ export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<vo
   return await withUpdateAdmissionReporting(inputOpts, async () => {
     const env = await resolveUpdateCommandAdmissionEnv({
       opts: inputOpts,
-      root: prepared.servicePlan?.rootRedirect?.root ?? prepared.discoveredRoot,
+      root: resolveUpdateCommandAdmissionRoot(prepared),
       invocationCwd,
       pkgOwnership: prepared.pkgOwnership,
     });
@@ -100,7 +101,7 @@ async function runAdmittedUpdate(
 ): Promise<void> {
   const run = await admitUpdateCommandRun({
     opts: inputOpts,
-    root: prepared.servicePlan?.rootRedirect?.root ?? prepared.discoveredRoot,
+    root: resolveUpdateCommandAdmissionRoot(prepared),
     invocationCwd,
     initialization,
     pkgOwnership: prepared.pkgOwnership,
@@ -119,6 +120,7 @@ async function runAdmittedUpdate(
     if (initialization?.target.updateInstallKind === "package") {
       run.executorFence = await initialization.executor.enter(initialization.target.root, {
         preflight: true,
+        serviceRoot: initialization.target.managedServiceRoot,
       });
     }
     const presentation = createUpdateProgress(!opts.json, run);
@@ -240,6 +242,7 @@ async function initializeAndRunUpdate(
                 invocationCwd,
               }),
               installTarget: target.packageInstallTarget,
+              requirePackageReplacement: target.managedServiceRoot !== undefined,
             });
             const runSelectedTarget = async () => {
               if (target.updateInstallKind !== "package") {
@@ -277,6 +280,9 @@ async function initializeAndRunUpdate(
                 });
               };
               const schemaPreflight = await checkSchemas();
+              if (!schemaPreflight) {
+                return;
+              }
               const initializationRuntime = await import("./update-command-initialization.js");
               await initializationRuntime.confirmFreshUpdateDowngrade({
                 target,
@@ -284,14 +290,13 @@ async function initializeAndRunUpdate(
                 controlPlaneUpdateSentinelMeta: prepared.controlPlaneUpdateSentinelMeta,
               });
               initialization.downgradeConfirmed = true;
-              const runtime = await resolvePackageRuntimePreflight({
+              const runtime = await preparePackageUpdateRuntime({
                 ...target,
+                managedService: schemaPreflight.service,
                 shouldRestart: prepared.shouldRestart,
-                target: target.packageRuntimeTarget,
+                opts,
+                executor,
                 timeoutMs,
-                nodeRunner: target.managedServiceNodeRunner,
-                service: schemaPreflight?.service,
-                invocationCwd,
               });
               if (!runtime.ok) {
                 return await target.refuseUpdate(
@@ -305,7 +310,10 @@ async function initializeAndRunUpdate(
               if (schemas.state >= OPENCLAW_STATE_SCHEMA_VERSION) {
                 return await runInitialized();
               }
-              const fence = await executor.enter(target.root, { preflight: true });
+              const fence = await executor.enter(target.root, {
+                preflight: true,
+                serviceRoot: target.managedServiceRoot,
+              });
               fence.assertCurrent();
               const { stagePackageInstallUpdate } = await import("./update-command-package.js");
               const legacyFence = initializationRuntime.acquireLegacyUpdateInitializationFence({
@@ -425,6 +433,7 @@ async function updateCommandInternal(
     packageAlreadyCurrent,
     packageRuntimeTarget,
     managedServiceRootRedirect,
+    managedServiceRoot,
     managedServiceNodeRunner,
   } = target;
   let { packageUpdateNodeRunner } = target;
@@ -497,6 +506,7 @@ async function updateCommandInternal(
     packageInstallSpec,
     runtimeTarget: packageRuntimeTarget,
     managedServiceRootRedirect,
+    managedServiceRoot,
     stop: presentation.stop,
     refuseUpdate,
   };
@@ -504,6 +514,7 @@ async function updateCommandInternal(
   const activateCurrentCore = async () => {
     run.executorFence = await executor.enter(root, {
       preflight: true,
+      serviceRoot: managedServiceRoot,
       activationTimeoutMs: (run.activationTimeoutMs ??=
         timeoutMs === undefined
           ? undefined
@@ -548,14 +559,13 @@ async function updateCommandInternal(
   }
 
   if (updateInstallKind === "package") {
-    const runtimePreflight = await resolvePackageRuntimePreflight({
+    const runtimePreflight = await preparePackageUpdateRuntime({
       ...target,
+      managedService: schemaPreflight.service,
       shouldRestart,
-      target: packageRuntimeTarget,
+      opts,
+      executor,
       timeoutMs: updateStepTimeoutMs,
-      nodeRunner: managedServiceNodeRunner,
-      service: schemaPreflight.service,
-      invocationCwd,
     });
     if (!runtimePreflight.ok) {
       return await refuseUpdate(
@@ -567,18 +577,6 @@ async function updateCommandInternal(
     }
     packageUpdateNodeRunner = runtimePreflight.value.nodeRunner;
     recoveryState.triageTarget.nodeRunner = packageUpdateNodeRunner;
-    if (runtimePreflight.value.replacedNodeRunner && !opts.json) {
-      defaultRuntime.log(
-        theme.warn(
-          `Managed gateway service Node (${runtimePreflight.value.replacedNodeRunner}) cannot run openclaw@${runtimePreflight.value.targetVersion ?? tag}.`,
-        ),
-      );
-      defaultRuntime.log(
-        theme.muted(
-          `Using current Node (${packageUpdateNodeRunner}) and refreshing the managed service runtime after the update.`,
-        ),
-      );
-    }
   }
 
   // Preload execution and recovery before the package swap can remove these chunks.
@@ -593,12 +591,17 @@ async function updateCommandInternal(
   const progress = createUpdateRunProgress(run, presentation.progress);
   let preUpdatePluginInstallRecords: Awaited<ReturnType<typeof prepareMutableUpdateRuntime>> = {};
   let mutableUpdatePrepared = false;
-  const prepareMutableUpdate = async (env?: NodeJS.ProcessEnv, activationTimeoutMs?: number) => {
+  const prepareMutableUpdate: Parameters<
+    typeof executeMutableUpdate
+  >[0]["prepareMutableUpdate"] = async (env, activationTimeoutMs, admitExecutor) => {
     if (!mutableUpdatePrepared) {
       assertUpdatePackageActivationAdmission(root);
     }
-    const fence = await executor.enter(root, { activationTimeoutMs });
-    run.executorFence = fence;
+    const fence = await executor.enter(root, {
+      serviceRoot: managedServiceRoot,
+      activationTimeoutMs,
+    });
+    admitExecutor(fence);
     run.activationTimeoutMs ??= activationTimeoutMs;
     fence.assertCurrent();
     if (mutableUpdatePrepared) {
@@ -622,6 +625,9 @@ async function updateCommandInternal(
     stagedPackage: initialization?.stagedPackage,
     packageTargetVersion: targetVersion ?? undefined,
     packageUpdateNodeRunner,
+    managedServiceNodeRunner,
+    managedServiceRootRedirect,
+    managedServiceRoot,
     invocationCwd,
     recoveryState,
     prepareMutableUpdate,

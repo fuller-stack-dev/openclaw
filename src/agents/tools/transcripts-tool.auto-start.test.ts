@@ -130,13 +130,17 @@ describe("transcripts auto-start stop reporting", () => {
         for (const id of ids) {
           await racePromiseWithAbortSignal(ready.get(id)!.promise, signal);
           gates.get(id)?.resolve();
-          await vi.waitFor(async () => {
-            expect(await execute("status")).toMatchObject({
-              details: {
-                active: expect.arrayContaining([expect.objectContaining({ sessionId: id })]),
-              },
-            });
-          });
+          // Startup joins real SQLite workers; this is setup, not a one-second latency contract.
+          await vi.waitFor(
+            async () => {
+              expect(await execute("status")).toMatchObject({
+                details: {
+                  active: expect.arrayContaining([expect.objectContaining({ sessionId: id })]),
+                },
+              });
+            },
+            { timeout: 10_000 },
+          );
           const request = requests.get(id)!;
           await request.onUtterance({ text: capturedText, final: true });
           await expect(store.readUtterancesForSession(request.session)).resolves.toEqual([
@@ -415,7 +419,8 @@ describe("continuous transcript startup ownership", () => {
       await withPluginRuntimeRegistryScope(registry, async () => {
         try {
           service.start();
-          await vi.waitFor(() => expect(requests).toHaveLength(1));
+          // Preserve the ownership fault only after real provider startup reaches its gate.
+          await vi.waitFor(() => expect(requests).toHaveLength(1), { timeout: 10_000 });
           const original = requests[0]!;
           const sessionId = original.session.sessionId;
           if (fault === "replacement abort") {
