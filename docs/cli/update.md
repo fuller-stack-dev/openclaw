@@ -203,8 +203,9 @@ bounds still apply. An explicit `--timeout <seconds>` limits each finalization p
 and its child commands. Admission and config phases scale with shared SQLite state.
 
 Post-plugin config validation and readiness checks use the measured shared and
-agent database sizes after Doctor finishes, including WAL files. Serial plugin
-operations retain individual deadlines. When an aggregate activation budget is
+agent database sizes after Doctor finishes, including WAL files. Post-core plugin
+installation and update work have no default deadline when `--timeout` is omitted;
+explicit operator limits and older caller allowances still apply. When an aggregate activation budget is
 present, it uses the measured database sizes, observed candidate startup, plugin
 count, and the caller's step allowance. Migrated finalization preserves explicit or
 inherited allowances. Aggregate expiry reports `update-activation-timeout` and
