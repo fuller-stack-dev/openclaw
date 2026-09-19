@@ -51,6 +51,10 @@ import {
   type PreManagedServiceStop,
 } from "./update-command-service.js";
 import {
+  captureUpdateCommandTerminalRecord,
+  type UpdateCommandTerminalRecord,
+} from "./update-command-terminal-record.js";
+import {
   deferUpdateCommandTerminalResult,
   recordUpdatePackageCompletion,
   publishUpdateCommandTerminalResult,
@@ -149,30 +153,48 @@ export async function finishUpdate(
         : {}),
       durationMs: Math.max(0, Date.now() - params.startedAt),
     });
-  const recordNextAction = (result: UpdateRunResult) => {
+  const recordNextAction = (
+    result: UpdateRunResult,
+    committed?: UpdateCommandTerminalRecord["record"],
+  ) => {
     assertCurrent();
-    return recordUpdateResultNextAction(params, result);
+    return recordUpdateResultNextAction(params, result, committed);
   };
   // Restart can let the new Gateway finish the row before CLI finalization resumes.
   // Store the next action before that handoff, and refresh it if recovery changes the outcome.
   recordNextAction(params.result);
 
   let pendingResult = params.result;
+  let terminalRecord: UpdateCommandTerminalRecord | undefined;
   let pendingNotify = true;
   const writeRestartSentinel = (result: UpdateRunResult) =>
     writeControlPlaneUpdateRestartSentinelBestEffort({ ...sentinelOptions, result });
-  const publishFinalResult = async (failure?: unknown): Promise<UpdateRunResult> => {
-    const settled = await resolveSettledUpdateCommandResult(params, pendingResult, failure);
+  const publishFinalResult = async (
+    failure?: unknown,
+    onTerminalRecord?: (record: UpdateCommandTerminalRecord["record"]) => void,
+  ): Promise<UpdateRunResult> => {
+    const settled = await resolveSettledUpdateCommandResult(
+      params,
+      pendingResult,
+      failure,
+      terminalRecord,
+    );
     const result = completedResult(settled.result);
     result.recovery = settled.settlementFailed ? undefined : result.recovery;
     const reportDowntime = !settled.settlementFailed && pendingRestartAtMs === undefined;
     if (pendingNotify) {
       await writeRestartSentinel(result);
     }
-    return publishUpdateCommandTerminalResult(params, result, {
-      rolledBack: rolledBack && !settled.settlementFailed,
-      downtimeMs: reportDowntime ? completedDowntimeMs : undefined,
-    });
+    return publishUpdateCommandTerminalResult(
+      params,
+      result,
+      {
+        rolledBack: rolledBack && !settled.settlementFailed,
+        downtimeMs: reportDowntime ? completedDowntimeMs : undefined,
+        captured: settled.captured,
+      },
+      onTerminalRecord,
+    );
   };
   const deferredTerminal = deferUpdateCommandTerminalResult(params.opts.run, publishFinalResult);
   const recoverFailedResult = async (
@@ -339,7 +361,11 @@ export async function finishUpdate(
         currentServiceStop()?.serviceEnv ?? process.env,
       );
     }
-    recordNextAction(finalResult);
+    const completedBeforeCleanup = deferredTerminal
+      ? await captureUpdateCommandTerminalRecord(params, finalResult, assertCurrent)
+      : undefined;
+    assertCurrent();
+    recordNextAction(finalResult, completedBeforeCleanup?.record);
     if (notify && recoverService) {
       pendingNotify = false;
       await writeRestartSentinel(finalResult);
@@ -382,6 +408,10 @@ export async function finishUpdate(
     const cleanupFailure = await recordUpdatePackageCompletion(params, finalResult, assertCurrent);
     assertCurrent();
     pendingResult = completedResult(cleanupFailure?.result ?? finalResult);
+    terminalRecord = deferredTerminal
+      ? await captureUpdateCommandTerminalRecord(params, pendingResult, assertCurrent)
+      : undefined;
+    assertCurrent();
     const reportedResult = deferredTerminal ? pendingResult : await publishFinalResult();
     if (cleanupFailure) {
       const { detail } = cleanupFailure;
