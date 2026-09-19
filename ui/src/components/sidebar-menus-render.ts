@@ -29,7 +29,8 @@ import {
   pluginSessionMenuActions,
   runControlUiPluginAction,
 } from "../plugins/control-ui-actions.ts";
-import { renderSidebarAgentMenu, renderSidebarIdentityMenu } from "./app-sidebar-agent-menu.ts";
+import { renderSidebarAgentMenu } from "./app-sidebar-agent-menu.ts";
+import { renderSidebarIdentityMenu } from "./app-sidebar-identity-menu.ts";
 import { renderSidebarCustomizeMenu, renderSidebarMoreMenu } from "./app-sidebar-nav-menus.ts";
 import { formatSidebarTimestamp } from "./app-sidebar-session-catalogs.ts";
 import {
