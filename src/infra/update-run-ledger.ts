@@ -552,31 +552,6 @@ export function finishUpdateRun(
   return mutateRun(runId, (record) => finishUpdateRunRecord(record, result), options);
 }
 
-/** Retain a completed outcome while its updater still owns the existing state.
- * Publication consumes this fact after release; it never grants recovery authority. */
-export function captureCompletedUpdateRun(
-  runId: string,
-  assertCurrent: () => void,
-  options: LedgerOptions,
-): UpdateRunRecord | undefined {
-  assertCurrent();
-  return runExistingOpenClawStateWriteTransaction(
-    ({ db }) => {
-      assertCurrent();
-      // Decode all retained evidence. Unknown or malformed recovery is never an
-      // empty namespace, and any retained record keeps its existing finalizer.
-      if (readRecoveries(db).length > 0) {
-        return undefined;
-      }
-      const record = readRun(db, runId);
-      assertCurrent();
-      return record?.status === "succeeded" && record.phase === "finished" ? record : undefined;
-    },
-    options,
-    { schemaSql: schema, operationLabel: "update.run" },
-  );
-}
-
 /** Correct the shipped refusal classification only after its install target was satisfied. */
 export function reconcilePackageOwnerRefusal(
   expected: UpdateRunRecord,

@@ -5,16 +5,11 @@ import {
   buildControlPlaneUpdateRestartHealthPendingResult,
   resolveManagedServiceUpdateFailureExitCode,
 } from "../../infra/update-control-plane-sentinel.js";
-import { collectUpdateDoctorFailureFacts } from "../../infra/update-doctor-result.js";
-import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
-import {
-  classifyUpdateOutcome,
-  UPDATE_ACTIVATION_TIMEOUT_REASON,
-} from "../../shared/update-outcome.js";
+import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { retireStandaloneGitWrapper } from "./update-command-git.js";
@@ -51,14 +46,17 @@ import {
   type PreManagedServiceStop,
 } from "./update-command-service.js";
 import {
+  completeUpdateCommandResult,
+  createPostUpdateFailureResult,
+  publishSettledUpdateCommandResult,
+} from "./update-command-terminal-publication.js";
+import {
   captureUpdateCommandTerminalRecord,
   type UpdateCommandTerminalRecord,
 } from "./update-command-terminal-record.js";
 import {
   deferUpdateCommandTerminalResult,
   recordUpdatePackageCompletion,
-  publishUpdateCommandTerminalResult,
-  resolveSettledUpdateCommandResult,
 } from "./update-command-terminal.js";
 
 export type { FinishUpdateParams } from "./update-command-finish-types.js";
@@ -143,16 +141,7 @@ export async function finishUpdate(
       pendingRestartAtMs = undefined;
     }
   };
-  const completedResult = (result: UpdateRunResult): UpdateRunResult =>
-    normalizeControlPlaneUpdateResult({
-      ...result,
-      ...(result.status === "error" &&
-      result.reason !== UPDATE_ACTIVATION_TIMEOUT_REASON &&
-      params.rollbackBlockedReason
-        ? { reason: params.rollbackBlockedReason }
-        : {}),
-      durationMs: Math.max(0, Date.now() - params.startedAt),
-    });
+  const completedResult = (result: UpdateRunResult) => completeUpdateCommandResult(params, result);
   const recordNextAction = (
     result: UpdateRunResult,
     committed?: UpdateCommandTerminalRecord["record"],
@@ -169,33 +158,25 @@ export async function finishUpdate(
   let pendingNotify = true;
   const writeRestartSentinel = (result: UpdateRunResult) =>
     writeControlPlaneUpdateRestartSentinelBestEffort({ ...sentinelOptions, result });
-  const publishFinalResult = async (
+  const publishFinalResult = (
     failure?: unknown,
     onTerminalRecord?: (record: UpdateCommandTerminalRecord["record"]) => void,
-  ): Promise<UpdateRunResult> => {
-    const settled = await resolveSettledUpdateCommandResult(
+  ) =>
+    publishSettledUpdateCommandResult(
       params,
-      pendingResult,
-      failure,
-      terminalRecord,
-    );
-    const result = completedResult(settled.result);
-    result.recovery = settled.settlementFailed ? undefined : result.recovery;
-    const reportDowntime = !settled.settlementFailed && pendingRestartAtMs === undefined;
-    if (pendingNotify) {
-      await writeRestartSentinel(result);
-    }
-    return publishUpdateCommandTerminalResult(
-      params,
-      result,
       {
-        rolledBack: rolledBack && !settled.settlementFailed,
-        downtimeMs: reportDowntime ? completedDowntimeMs : undefined,
-        captured: settled.captured,
+        pendingResult,
+        failure,
+        terminalRecord,
+        readReportingState: () => ({
+          notify: pendingNotify ? writeRestartSentinel : undefined,
+          rolledBack,
+          pendingRestartAtMs,
+          completedDowntimeMs,
+        }),
       },
       onTerminalRecord,
     );
-  };
   const deferredTerminal = deferUpdateCommandTerminalResult(params.opts.run, publishFinalResult);
   const recoverFailedResult = async (
     initialResult: UpdateRunResult,
@@ -732,26 +713,9 @@ export async function finishUpdate(
       // Staging may already have changed files. Keep intent/material for fenced reconciliation.
       throw error;
     }
-    const message = formatErrorMessage(error);
-    const failureFacts = collectUpdateDoctorFailureFacts(error);
+    const { result, message } = createPostUpdateFailureResult(params, error);
     defaultRuntime.error(`Post-update verification failed: ${message}`);
-    const reported = await reportResult({
-      ...params.result,
-      status: "error",
-      reason: "post-update-failed",
-      steps: [
-        ...params.result.steps,
-        {
-          name: "post-update verification",
-          command: "openclaw update",
-          cwd: params.result.root ?? params.root,
-          durationMs: Math.max(0, Date.now() - params.startedAt),
-          exitCode: 1,
-          stderrTail: message,
-          ...(failureFacts.length ? { failureFacts } : {}),
-        },
-      ],
-    });
+    const reported = await reportResult(result);
     throw createFailure(reported, resolveManagedServiceUpdateFailureExitCode(reported), message, {
       cause: error,
     });

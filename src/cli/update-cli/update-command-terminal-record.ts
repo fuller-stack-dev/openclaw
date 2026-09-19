@@ -2,9 +2,9 @@ import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../../infra/sqlite-worker-identity.js";
-import { captureCompletedUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
 import { assertUpdateRecoveryDirectoryAdmission } from "../../infra/update-run-recovery-admission.js";
+import { captureCompletedUpdateRun } from "../../infra/update-run-terminal-record.js";
 import { isUpdateRunVerificationConfirmed } from "../../infra/update-run-verification.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { openClawStateDatabaseCache } from "../../state/openclaw-state-db-cache.js";
