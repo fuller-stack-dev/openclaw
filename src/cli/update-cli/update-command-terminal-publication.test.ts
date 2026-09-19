@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { publishSettledUpdateCommandResult } from "./update-command-terminal-publication.js";
 
@@ -22,7 +23,7 @@ beforeEach(() => {
 });
 
 it("reads notification and completed downtime after settlement finishes", async () => {
-  const settlement = Promise.withResolvers<{
+  const settlement = createDeferred<{
     result: UpdateRunResult;
     settlementFailed: boolean;
   }>();
