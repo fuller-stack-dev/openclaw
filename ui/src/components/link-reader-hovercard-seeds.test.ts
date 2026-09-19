@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ControlUiLinkReaderPreview } from "../../../src/shared/control-ui-link-reader.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { GatewayBrowserClient } from "../api/gateway.ts";
+import { GatewayRequestError, type GatewayBrowserClient } from "../api/gateway.ts";
 import { TEST_LINK_READER } from "../test-helpers/link-reader.ts";
 import { LinkReaderHovercardProvider } from "./link-reader-hovercard.ts";
 
@@ -135,16 +135,19 @@ describe("GitHub hovercards with authorized session details", () => {
 
   it("retains the cached card through failure and reentry without bypassing request backoff", async () => {
     const { pending, client, anchor } = createSeededLink();
+    const message = "GitHub API rate limit reached. Retry after 40 minutes.";
     await hover(anchor);
-    pending.reject(new Error("Rate limited"));
+    pending.reject(new GatewayRequestError({ code: "UNAVAILABLE", message }));
     await vi.advanceTimersByTimeAsync(0);
     expect(hovercard()?.textContent).toContain(seed.title);
     expect(hovercard()?.textContent).toContain("Cached details");
+    expect(hovercard()?.textContent).toContain(message);
     leave(anchor);
     await vi.advanceTimersByTimeAsync(120);
     expect(hovercard()).toBeNull();
     await hover(anchor);
     expect(hovercard()?.textContent).toContain(seed.title);
+    expect(hovercard()?.textContent).toContain(message);
     expect(client.request).toHaveBeenCalledTimes(1);
 
     leave(anchor);
@@ -153,6 +156,7 @@ describe("GitHub hovercards with authorized session details", () => {
     await hover(anchor);
     expect(client.request).toHaveBeenCalledTimes(2);
     expect(hovercard()?.textContent).toContain(details.title);
+    expect(hovercard()?.textContent).not.toContain(message);
   });
 
   it.each(["agent", "client", "connection", "principal", "reader"])(
@@ -180,7 +184,9 @@ describe("GitHub hovercards with authorized session details", () => {
       expect(hovercard()).toBeNull();
       current.reject(new Error("Unavailable"));
       await vi.advanceTimersByTimeAsync(0);
-      expect(hovercard()).toBeNull();
+      expect(hovercard()?.textContent).toContain("Could not load preview");
+      expect(hovercard()?.textContent).not.toContain(seed.title);
+      expect(hovercard()?.textContent).not.toContain(details.title);
     },
   );
 

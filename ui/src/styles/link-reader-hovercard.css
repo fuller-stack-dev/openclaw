@@ -163,6 +163,18 @@
   white-space: nowrap;
 }
 
+.link-reader-hovercard__error {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-subtle);
+  color: var(--warn);
+  font-size: var(--control-ui-text-md);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .link-reader-hovercard__skeleton .skeleton {
   display: block;
   height: 14px;

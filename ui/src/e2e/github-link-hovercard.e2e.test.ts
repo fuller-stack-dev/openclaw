@@ -19,6 +19,7 @@ import {
 } from "../test-helpers/control-ui-e2e.ts";
 import { TEST_LINK_READER } from "../test-helpers/link-reader.ts";
 import { waitForWatchedSessionKey } from "./chat-github-publication.test-support.ts";
+import { pullPreviewResponse } from "./github-link-hovercard.test-support.ts";
 
 let artifactDir: string | undefined;
 beforeEach(() => {
@@ -92,52 +93,6 @@ async function captureArtifact(target: Page | Locator, name: string): Promise<vo
   }
   await target.screenshot({ path: path.join(artifactDir, `${name}.png`) });
 }
-
-const pullPreviewResponse = {
-  url: "https://github.com/openclaw/openclaw/pull/99816",
-  subtitle: "openclaw/openclaw #99816",
-  author: "steipete",
-  badge: { label: "Merged", tone: "accent" },
-  metadata: [
-    { label: "", value: "+101" },
-    { label: "", value: "−12" },
-  ],
-  additions: 101,
-  coAuthorCount: 5,
-  coAuthors: [
-    {
-      login: "roboclaw-bot",
-      imageUrl:
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=",
-    },
-    {
-      login: "ada",
-      imageUrl:
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=",
-    },
-    {
-      login: "mira",
-      imageUrl:
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=",
-    },
-  ],
-  imageUrl:
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=",
-  changedFiles: 3,
-  closedAt: "2026-07-04T09:53:52Z",
-  createdAt: "2026-07-04T05:03:47Z",
-  deletions: 12,
-  draft: false,
-  kind: "pull",
-  login: "steipete",
-  mergedAt: "2026-07-04T09:53:52Z",
-  number: 99816,
-  owner: "openclaw",
-  repo: "openclaw",
-  state: "closed",
-  title: "fix(agents): derive conversation scope from trusted group facts",
-  updatedAt: "2026-07-04T09:53:55Z",
-};
 
 const PULL_HREF = "https://github.com/openclaw/openclaw/pull/99816";
 const PULL_COMMENT_HREF = `${PULL_HREF}#issuecomment-123`;
@@ -504,7 +459,7 @@ describeControlUiE2e("GitHub link hover cards", () => {
     { theme: "dark", reducedMotion: "no-preference", width: 1180, fails: false },
     { theme: "dark", reducedMotion: "reduce", width: 390, fails: true },
   ] as const)(
-    "waits silently for data ($theme, $reducedMotion, $width, fails=$fails)",
+    "waits silently while pending, then shows the result ($theme, $reducedMotion, $width, fails=$fails)",
     async (scenario) => {
       const { card, gateway, page, pullLink } = await openPullPreviewPage(true);
       await page.emulateMedia({
@@ -529,33 +484,36 @@ describeControlUiE2e("GitHub link hover cards", () => {
       if (scenario.fails) {
         const error = "GitHub API rate limit exceeded (HTTP 403). Try again in 2 minutes.";
         await gateway.rejectDeferred("forge.preview", { message: error });
-        await expect.poll(() => card.count()).toBe(0);
-        expect(await pullLink.getAttribute("aria-controls")).toBeNull();
-        expect(await pullLink.getAttribute("aria-expanded")).toBeNull();
-        expect(await pullLink.getAttribute("aria-haspopup")).toBeNull();
+        await expectText(card.getByRole("status"), error);
+        expect(await card.getAttribute("aria-label")).toBe("Could not load preview");
+        const externalLink = card.getByRole("link", { name: "Open on Forge" });
+        expect(await externalLink.getAttribute("href")).toBe(PULL_HREF);
+        expect(await externalLink.getAttribute("target")).toBe("_blank");
+        expect(await pullLink.getAttribute("aria-controls")).toBe(await card.getAttribute("id"));
+        expect(await pullLink.getAttribute("aria-expanded")).toBe("true");
+        expect(await pullLink.getAttribute("aria-haspopup")).toBe("dialog");
         expect(await pullLink.evaluate((element) => element === document.activeElement)).toBe(true);
-        expect(await page.locator("body").getAttribute("data-preview-mounts")).toBe("0");
-        await captureArtifact(page, "github-hovercard-failure-silent");
+        await captureArtifact(page, "github-hovercard-rate-limit");
       } else {
         await gateway.resolveDeferred("forge.preview");
         await expectText(card, pullPreviewResponse.title);
-        expect(await page.locator("body").getAttribute("data-preview-mounts")).toBe("1");
-        expect(await page.locator("body").getAttribute("data-preview-empty-mounts")).toBe("0");
-        const bounds = await card.boundingBox();
-        expect(bounds!.x).toBeGreaterThanOrEqual(0);
-        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(scenario.width);
-        await page.keyboard.press("Tab");
-        expect(
-          await card
-            .locator("a")
-            .first()
-            .evaluate((element) => element === document.activeElement),
-        ).toBe(true);
-        await page.keyboard.press("Escape");
-        await expect.poll(() => card.count()).toBe(0);
-        expect(await pullLink.evaluate((element) => element === document.activeElement)).toBe(true);
       }
+      expect(await page.locator("body").getAttribute("data-preview-mounts")).toBe("1");
+      expect(await page.locator("body").getAttribute("data-preview-empty-mounts")).toBe("0");
+      const bounds = await card.boundingBox();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(scenario.width);
       expect(await card.locator(".skeleton").count()).toBe(0);
+      await page.keyboard.press("Tab");
+      expect(
+        await card
+          .locator("a")
+          .first()
+          .evaluate((element) => element === document.activeElement),
+      ).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect.poll(() => card.count()).toBe(0);
+      expect(await pullLink.evaluate((element) => element === document.activeElement)).toBe(true);
     },
   );
 
@@ -594,13 +552,17 @@ describeControlUiE2e("GitHub link hover cards", () => {
     await expect.poll(() => card.getAttribute("data-loading")).toBe("true");
     expect(await card.getAttribute("aria-label")).toBe("Loading preview…");
     await gateway.rejectDeferred("forge.preview", { message: "Not Found" });
-    await expect.poll(() => card.count()).toBe(0);
-    const mounts = await page.locator("body").getAttribute("data-preview-mounts");
+    await expectText(card.getByRole("status"), "Not Found");
+    expect(await card.locator(".skeleton").count()).toBe(0);
     await page.mouse.move(1, 1);
+    await expect.poll(() => card.count()).toBe(0);
     await peerLink.hover();
     await page.clock.runFor(300);
-    expect(await card.count()).toBe(0);
-    expect(await page.locator("body").getAttribute("data-preview-mounts")).toBe(mounts);
+    await expectText(card.getByRole("status"), "Not Found");
+    expect(await card.locator(".skeleton").count()).toBe(0);
+    expect(await card.getByRole("link", { name: "Open on Forge" }).getAttribute("href")).toBe(
+      "https://github.com/openclaw/openclaw/pull/99817",
+    );
     expect((await gateway.getRequests("forge.preview")).length).toBe(2);
 
     await page.reload();
@@ -611,31 +573,53 @@ describeControlUiE2e("GitHub link hover cards", () => {
     expect(await card.count()).toBe(0);
   });
 
-  it("keeps failed permalinks silent during backoff and leaves keyboard navigation usable", async () => {
+  it("shows cached permalink failures during backoff and keeps keyboard navigation usable", async () => {
     const { card, commentLink, gateway, page, pullLink } = await openPullPreviewPage(true);
     await pullLink.focus();
     await gateway.waitForRequest("forge.preview");
     await gateway.rejectDeferred("forge.preview", {
       message: "GitHub request timed out",
     });
+    await expectText(card.getByRole("status"), "GitHub request timed out");
+    const externalLink = card.getByRole("link", { name: "Open on Forge" });
+    expect(await externalLink.getAttribute("href")).toBe(PULL_HREF);
+
+    await page.keyboard.press("Tab");
+    expect(await externalLink.evaluate((element) => element === document.activeElement)).toBe(true);
+    await page.keyboard.press("Escape");
     await expect.poll(() => card.count()).toBe(0);
+    expect(await pullLink.evaluate((element) => element === document.activeElement)).toBe(true);
 
     await page.keyboard.press("Tab");
     expect(await commentLink.evaluate((element) => element === document.activeElement)).toBe(true);
+    await expectText(card.getByRole("status"), "GitHub request timed out");
+    expect(await externalLink.getAttribute("href")).toBe(PULL_COMMENT_HREF);
     await commentLink.hover();
     await page.clock.runFor(300);
     await page.mouse.move(1, 1);
     await pullLink.focus();
     await pullLink.hover();
     await page.clock.runFor(300);
-    expect(await card.count()).toBe(0);
-    expect(await page.locator("body").getAttribute("data-preview-mounts")).toBe("0");
+    await expectText(card.getByRole("status"), "GitHub request timed out");
+    expect(await externalLink.getAttribute("href")).toBe(PULL_HREF);
+    expect(await page.locator("body").getAttribute("data-preview-empty-mounts")).toBe("0");
     expect(await page.locator("body").getAttribute("data-title-tooltip-mounts")).toBe("0");
     expect(await page.locator("openclaw-tooltip wa-tooltip[open]").count()).toBe(0);
     expect((await gateway.getRequests("forge.preview")).length).toBe(1);
-    expect(await pullLink.getAttribute("aria-haspopup")).toBeNull();
+    expect(await pullLink.getAttribute("aria-haspopup")).toBe("dialog");
 
     await expectModifiedNavigation(page, () => page.keyboard.press("Shift+Enter"), PULL_HREF);
+
+    await pullLink.evaluate((element) => element.blur());
+    await page.mouse.move(1, 1);
+    await expect.poll(() => card.count()).toBe(0);
+    await gateway.deferNext("forge.preview");
+    await page.clock.runFor(30_000);
+    await pullLink.focus();
+    await expect.poll(async () => (await gateway.getRequests("forge.preview")).length).toBe(2);
+    expect(await card.count()).toBe(0);
+    await gateway.resolveDeferred("forge.preview");
+    await expectText(card, pullPreviewResponse.title);
   });
 
   it.each(["pointer", "focus"])(
@@ -898,8 +882,11 @@ describeControlUiE2e("GitHub link hover cards", () => {
     const missingLink = page.getByRole("link", { name: "missing item" });
     await missingLink.hover();
     await expect.poll(() => previewRequestsFor(999999)).toHaveLength(1);
-    await expect.poll(() => card.count()).toBe(0);
-    expect(await missingLink.getAttribute("aria-haspopup")).toBeNull();
+    await expectText(card.getByRole("status"), "Try again or open the original.");
+    expect(await missingLink.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(await card.getByRole("link", { name: "Open on Forge" }).getAttribute("href")).toBe(
+      "https://github.com/openclaw/openclaw/issues/999999",
+    );
     expect(await missingLink.getAttribute("href")).toBe(
       "https://github.com/openclaw/openclaw/issues/999999",
     );

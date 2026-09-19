@@ -43,7 +43,7 @@ afterEach(async () => {
 });
 
 describe("transcripts auto-start stop reporting", () => {
-  it.each([
+  it.for([
     { name: "export failure", blocked: true, outcome: "ok", manual: false },
     { name: "returned provider failure", blocked: false, outcome: "warn", manual: false },
     {
@@ -60,7 +60,8 @@ describe("transcripts auto-start stop reporting", () => {
       outcome: "ok",
       manual: true,
     },
-  ])("$name preserves state and finishes siblings", async ({ blocked, outcome, manual }) => {
+  ])("$name preserves state and finishes siblings", async (fixture, { signal }) => {
+    const { blocked, outcome, manual } = fixture;
     const stateDir = await fs.realpath(tempDirs.make("openclaw-transcripts-auto-stop-"));
     const options = { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
     const databasePath = path.resolve(resolveOpenClawStateSqlitePath(options.env));
@@ -70,6 +71,7 @@ describe("transcripts auto-start stop reporting", () => {
     const subjectId = "subject";
     const ids = [subjectId, "healthy-sibling"];
     const gates = new Map(ids.map((id) => [id, createDeferred()]));
+    const ready = new Map(ids.map((id) => [id, createDeferred()]));
     const needsRetry = outcome === "warn" || outcome === "throw";
     let cleanupFails = outcome !== "ok";
     const stop = vi.fn(async ({ sessionId }: TranscriptStopRequest) => {
@@ -93,6 +95,7 @@ describe("transcripts auto-start stop reporting", () => {
       sourceKinds: ["live-caption"],
       async start(request) {
         requests.set(request.session.sessionId, request);
+        ready.get(request.session.sessionId)?.resolve();
         await gates.get(request.session.sessionId)?.promise;
         return { ok: true, session: request.session };
       },
@@ -125,6 +128,7 @@ describe("transcripts auto-start stop reporting", () => {
       try {
         service.start();
         for (const id of ids) {
+          await racePromiseWithAbortSignal(ready.get(id)!.promise, signal);
           gates.get(id)?.resolve();
           await vi.waitFor(async () => {
             expect(await execute("status")).toMatchObject({

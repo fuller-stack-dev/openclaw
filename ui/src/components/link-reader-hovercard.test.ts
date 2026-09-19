@@ -5,7 +5,7 @@ import type {
   ControlUiLinkReaderDescriptor,
   ControlUiLinkReaderPreview,
 } from "../../../src/shared/control-ui-link-reader.js";
-import type { GatewayBrowserClient } from "../api/gateway.ts";
+import { GatewayRequestError, type GatewayBrowserClient } from "../api/gateway.ts";
 import { i18n } from "../i18n/index.ts";
 import { LinkReaderHovercardProvider } from "./link-reader-hovercard.ts";
 
@@ -176,13 +176,27 @@ describe("openclaw-link-reader-hovercard-provider", () => {
     expect(card()?.textContent).toContain("Keep previews compact");
   });
 
-  it("keeps failed previews invisible and briefly caches failures", async () => {
+  it.each([
+    "GitHub API rate limit reached. Retry after 40 minutes.",
+    "GitHub item not found (HTTP 404). Check the URL and access permissions.",
+    "GitHub authentication failed (HTTP 401). Check the configured credentials.",
+  ])("shows the provider failure and caches it without refetching: %s", async (message) => {
     const { anchor, provider } = createLink();
-    const request = connect(provider, vi.fn().mockRejectedValue(new Error("Not Found")));
+    const request = connect(
+      provider,
+      vi.fn().mockRejectedValue(new GatewayRequestError({ code: "UNAVAILABLE", message })),
+    );
     await hover(anchor);
-    expect(card()).toBeNull();
+    expect(card()?.textContent).toContain("Could not load preview");
+    expect(card()?.textContent).toContain(message);
+    const externalLink = card()?.querySelector<HTMLAnchorElement>("a");
+    expect(externalLink?.textContent).toBe("Open on GitHub");
+    expect(externalLink?.href).toBe(href);
     leave(anchor);
+    await vi.advanceTimersByTimeAsync(120);
+    expect(card()).toBeNull();
     await hover(anchor);
+    expect(card()?.textContent).toContain(message);
     expect(request).toHaveBeenCalledTimes(1);
     leave(anchor);
     await vi.advanceTimersByTimeAsync(30_000);
@@ -195,11 +209,12 @@ describe("openclaw-link-reader-hovercard-provider", () => {
     { title: "Wrong reader", url: "https://other.example/item/1" },
     { title: "Wrong item", url: href.replace("99816", "99817") },
     { title: "Wrong query", url: href + "?resource=other" },
-  ])("rejects invalid preview data without mounting an empty popup: %j", async (value) => {
+  ])("reports invalid preview data without rendering mismatched details: %j", async (value) => {
     const { anchor, provider } = createLink();
     connect(provider, vi.fn().mockResolvedValue(value));
     await hover(anchor);
-    expect(card()).toBeNull();
+    expect(card()?.textContent).toContain("Could not load preview");
+    expect(card()?.textContent).not.toContain("Wrong");
   });
 
   it("preserves existing descriptions when leaving before opening and on route removal", async () => {

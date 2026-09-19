@@ -351,6 +351,45 @@ describe("renderSessionHovercard", () => {
     expect(container.querySelector(".session-hovercard__section--header")).toBeNull();
   });
 
+  it.each(["rate-limited", "unavailable"] as const)(
+    "explains %s GitHub lookups with or without retained work and clears the warning after recovery",
+    (status) => {
+      const container = document.createElement("div");
+      const branch = { owner: "openclaw", repo: "openclaw", branch: "feature" };
+      const pullRequest = {
+        ...branch,
+        number: 101,
+        title: "Retained pull request",
+        url: "https://github.com/openclaw/openclaw/pull/101",
+        state: "open" as const,
+      };
+      for (const work of [{}, { branch }, { pullRequests: [pullRequest] }]) {
+        render(
+          renderSessionHovercard({
+            pullRequests: snapshot({ ...work, status, rateLimited: status === "rate-limited" }),
+          }),
+          container,
+        );
+        const notice = container.querySelector('[role="status"]');
+        expect(notice?.textContent).toContain(
+          status === "rate-limited" ? "GitHub API rate limit reached" : "could not be refreshed",
+        );
+        if (status === "unavailable") {
+          expect(notice?.textContent).not.toContain("rate limit");
+        }
+      }
+      expect(container.querySelector<HTMLAnchorElement>(".session-hovercard__pr-row")?.href).toBe(
+        pullRequest.url,
+      );
+      render(
+        renderSessionHovercard({ pullRequests: snapshot({ pullRequests: [pullRequest] }) }),
+        container,
+      );
+      expect(container.querySelector('[role="status"]')).toBeNull();
+      expect(container.textContent).toContain(pullRequest.title);
+    },
+  );
+
   it("does not invent a directory for a repository-only context", () => {
     const container = document.createElement("div");
     render(

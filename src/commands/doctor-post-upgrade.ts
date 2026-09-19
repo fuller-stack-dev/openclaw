@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { hasErrnoCode } from "../infra/errno.js";
+import type { UpdateChannel } from "../infra/update-channels.js";
 import { formatConsoleDiagnosticLine } from "../logging/json-console-line.js";
 import { resolveInstalledPluginIndexInstallOwner } from "../plugins/installed-plugin-index-install-owner.js";
 import { isOptionalPluginManifestFile } from "../plugins/installed-plugin-index-manifest.js";
@@ -14,6 +15,7 @@ import { resolvePackageExtensionEntries, type PackageManifest } from "../plugins
 import { validatePackageExtensionEntriesForInstall } from "../plugins/package-entry-resolution.js";
 import {
   detectPluginVersionDrift,
+  resolvePluginVersionDriftRegistryLag,
   resolvePluginVersionDriftTargets,
   resolvePluginVersionDriftUpdateCommand,
 } from "../plugins/plugin-version-drift.js";
@@ -85,6 +87,7 @@ async function resolvePackageJsonRelPath(
 /** Runs post-upgrade plugin probes and returns structured findings for the caller to render. */
 export async function runPostUpgradeProbes(params: {
   stateDir?: string;
+  updateChannel?: UpdateChannel;
 }): Promise<PostUpgradeReport> {
   const findings: PostUpgradeFinding[] = [];
   const installs = await readPersistedInstalledPluginIndex(params);
@@ -109,16 +112,27 @@ export async function runPostUpgradeProbes(params: {
   );
   // Post-upgrade validates the newly installed CLI even while the old Gateway
   // is still running; the persisted index owns the selected plugins' enablement.
+  // Carry only update intent so current config cannot re-filter that selection.
   const drift = await resolvePluginVersionDriftTargets(
-    detectPluginVersionDrift({ gatewayVersion: VERSION, installRecords }),
+    detectPluginVersionDrift({
+      gatewayVersion: VERSION,
+      installRecords,
+      config: { update: { channel: params.updateChannel } },
+    }),
   );
   for (const entry of drift.drifts) {
+    const registryLag = resolvePluginVersionDriftRegistryLag(entry);
     const updateCommand = resolvePluginVersionDriftUpdateCommand(entry);
+    const repair = registryLag
+      ? `The registry already serves ${registryLag.registryVersion}; no release reaches ${registryLag.expectedVersion} yet, so no update applies.`
+      : updateCommand
+        ? `Run \`${updateCommand}\`, then restart the Gateway.`
+        : "No confirmed repair target is available; check registry availability and rerun this command.";
     findings.push({
       level: "warn",
       code: "plugin.version_drift",
       plugin: entry.pluginId,
-      message: `Plugin ${entry.pluginId} is ${entry.installedVersion}, but OpenClaw is ${VERSION}. ${updateCommand ? `Run \`${updateCommand}\`, then restart the Gateway.` : "No confirmed repair target is available; check registry availability and rerun this command."}`,
+      message: `Plugin ${entry.pluginId} is ${entry.installedVersion}, but OpenClaw is ${VERSION}. ${repair}`,
     });
   }
 

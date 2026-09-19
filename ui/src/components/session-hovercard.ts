@@ -514,7 +514,10 @@ export function renderSessionHovercard(input: SessionHovercardInput) {
     input.row?.hasActiveRun ?? false,
   );
   const hasPullRequestDetails = Boolean(
-    input.pullRequests && (input.pullRequests.pullRequests.length > 0 || input.pullRequests.branch),
+    input.pullRequests &&
+    (input.pullRequests.pullRequests.length > 0 ||
+      input.pullRequests.branch ||
+      input.pullRequests.status !== "ready"),
   );
   const hasContext = Boolean(
     input.row?.workContext ||
@@ -548,6 +551,17 @@ export function renderSessionHovercard(input: SessionHovercardInput) {
       hasPullRequestDetails
         ? html`<section class="session-hovercard__section session-hovercard__section--prs">
             ${renderPullRequestDetails(input.pullRequests)}
+            ${
+              input.pullRequests?.status !== "ready"
+                ? html`<div class="session-hovercard__more" role="status">
+                    ${t(
+                      input.pullRequests?.status === "rate-limited"
+                        ? "chat.pullRequests.rateLimited"
+                        : "chat.pullRequests.unavailable",
+                    )}
+                  </div>`
+                : nothing
+            }
           </section>`
         : nothing
     }
