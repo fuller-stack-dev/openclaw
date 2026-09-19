@@ -557,6 +557,7 @@ export async function updateGitInstall(params: {
               managedServiceEnv: params.getManagedServiceEnv(),
               root,
               timeoutMs: effectiveTimeout,
+              workTimeoutMs: params.timeoutMs ?? null,
             }),
       prepareGitExposure: installTarget
         ? async (candidateRoot, candidateSha, candidateEnv) => {
@@ -571,6 +572,7 @@ export async function updateGitInstall(params: {
               runCommand: runCommandWithTimeout,
               runStep: (stepParams) => runUpdateStep({ ...stepParams, progress: params.progress }),
               timeoutMs: effectiveTimeout,
+              workTimeoutMs: params.timeoutMs ?? null,
               env: mergeProcessEnv([installEnv, candidateEnv]),
               installCwd: candidateRoot,
               expectedGitCheckout: { root: candidateRoot, sha: candidateSha },
@@ -583,6 +585,7 @@ export async function updateGitInstall(params: {
                   managedServiceEnv: params.getManagedServiceEnv(),
                   root,
                   timeoutMs: effectiveTimeout,
+                  workTimeoutMs: params.timeoutMs ?? null,
                 }),
             });
           }

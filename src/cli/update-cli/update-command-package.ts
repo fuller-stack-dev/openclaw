@@ -2,6 +2,7 @@ import path from "node:path";
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
+import { resolveInstallWorkTimeoutMs } from "../../infra/install-mode-options.js";
 import {
   markPackagePostInstallDoctorAdvisory,
   runGlobalPackageUpdateSteps,
@@ -66,6 +67,7 @@ export async function readPackageUpdateIdentity(root: string) {
 type PackageDoctorOptions = {
   root: string;
   timeoutMs: number;
+  workTimeoutMs?: number | null;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
   managedServiceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
@@ -172,7 +174,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
         }),
         [UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]: doctorResultPath,
       },
-      timeoutMs: params.timeoutMs,
+      timeoutMs: resolveInstallWorkTimeoutMs(params.workTimeoutMs, params.timeoutMs),
       ...(runCommand ? { runCommand } : {}),
     });
   const doctorStep = context
@@ -306,6 +308,8 @@ export type PackageInstallUpdateParams = {
   tag: string;
   installSpec?: string;
   timeoutMs: number;
+  /** Null leaves forward work unbounded; omission retains the caller's timeout. */
+  workTimeoutMs?: number | null;
   startedAt: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
   managedServiceEnv?: NodeJS.ProcessEnv;
@@ -450,6 +454,7 @@ export async function runPackageInstallUpdate(
       params.installKind === "git" || params.requirePackageReplacement === true,
     runCommand: runCommandWithTimeout,
     timeoutMs: params.timeoutMs,
+    workTimeoutMs: params.workTimeoutMs,
     ...(installEnv === undefined ? {} : { env: installEnv }),
     runStep: (stepParams) =>
       runUpdateStep({

@@ -8,6 +8,7 @@ import { LEGACY_PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "../../scripts/lib/pa
 import { UPDATE_GLOBAL_PERMISSION_REASON } from "../shared/update-outcome.js";
 import { resolveBunGlobalInstallOwner } from "./detect-package-manager.js";
 import { formatErrorMessage } from "./errors.js";
+import { resolveInstallWorkTimeoutMs } from "./install-mode-options.js";
 import { collectPackageDistContentInventoryErrors } from "./package-dist-inventory.js";
 import { readPackageVersion } from "./package-json.js";
 import { completePendingPackageLifecycle } from "./package-lifecycle.js";
@@ -72,7 +73,7 @@ type PackageUpdateStepRunner = (params: {
   name: string;
   argv: string[];
   cwd?: string;
-  timeoutMs: number;
+  timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
 }) => Promise<UpdateStepResult>;
 
@@ -401,7 +402,7 @@ async function prepareNpmGitSourceInstallSpec(params: {
   installSpec: string;
   packageName: string;
   runStep: PackageUpdateStepRunner;
-  timeoutMs: number;
+  timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   installCwd?: string;
 }): Promise<{
@@ -571,6 +572,8 @@ export async function runGlobalPackageUpdateSteps(params: {
   runCommand: CommandRunner;
   runStep: PackageUpdateStepRunner;
   timeoutMs: number;
+  /** Null leaves forward work unbounded; omission retains the caller's timeout. */
+  workTimeoutMs?: number | null;
   env?: NodeJS.ProcessEnv;
   installCwd?: string;
   postVerifyStep?: (packageRoot: string) => Promise<UpdateStepResult | null>;
@@ -582,6 +585,7 @@ export async function runGlobalPackageUpdateSteps(params: {
   activateGitRoot?: string;
   localOverrides?: { reapply: boolean; env?: NodeJS.ProcessEnv };
 }): Promise<PackageUpdateStepsResult> {
+  const workTimeoutMs = resolveInstallWorkTimeoutMs(params.workTimeoutMs, params.timeoutMs);
   // Transaction callbacks must never silently become an in-place manager install.
   // FreeBSD pkg ownership also needs staging's exact project and launcher targets;
   // an in-place package-manager command does not expose that replacement set.
@@ -795,7 +799,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       installSpec: params.installSpec,
       packageName: params.packageName,
       runStep: params.runStep,
-      timeoutMs: params.timeoutMs,
+      timeoutMs: workTimeoutMs,
       env: params.env,
       installCwd: params.installCwd,
     });
@@ -837,7 +841,7 @@ export async function runGlobalPackageUpdateSteps(params: {
         ],
         ...(updateCwd ? { cwd: updateCwd } : {}),
         ...installEnv,
-        timeoutMs: params.timeoutMs,
+        timeoutMs: workTimeoutMs,
       }),
       params.installTarget,
       params.env,
@@ -882,7 +886,7 @@ export async function runGlobalPackageUpdateSteps(params: {
             argv: fallbackArgv,
             ...(preparedSpec.installCwd ? { cwd: preparedSpec.installCwd } : {}),
             ...installEnv,
-            timeoutMs: params.timeoutMs,
+            timeoutMs: workTimeoutMs,
           }),
           params.installTarget,
           params.env,

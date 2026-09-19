@@ -275,32 +275,77 @@ describe("runGlobalPackageUpdateSteps", () => {
     },
   );
 
-  it("packs npm GitHub specs before installing into the staged prefix", async () => {
-    await withTestDir({ prefix: "openclaw-package-update-npm-pack-" }, async (base) => {
-      const prefix = path.join(base, "prefix");
-      const globalRoot = path.join(prefix, "lib", "node_modules");
-      const packageRoot = path.join(globalRoot, "openclaw");
-      const sourceSpec = "OpenClaw@github:openclaw/openclaw#release/2026.5.12";
-      await writePackageRoot(packageRoot, "1.0.0");
+  it.each([
+    { policy: "unbounded", workTimeoutMs: null, expectedTimeoutMs: undefined },
+    { policy: "explicit", workTimeoutMs: 2000, expectedTimeoutMs: 2000 },
+    { policy: "legacy", workTimeoutMs: undefined, expectedTimeoutMs: 1000 },
+  ])(
+    "packs and installs npm GitHub specs with the $policy work budget",
+    async ({ workTimeoutMs, expectedTimeoutMs }) => {
+      await withTestDir({ prefix: "openclaw-package-update-npm-pack-" }, async (base) => {
+        const prefix = path.join(base, "prefix");
+        const globalRoot = path.join(prefix, "lib", "node_modules");
+        const packageRoot = path.join(globalRoot, "openclaw");
+        const sourceSpec = "OpenClaw@github:openclaw/openclaw#release/2026.5.12";
+        await writePackageRoot(packageRoot, "1.0.0");
 
-      let packDir: string | undefined;
-      const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
-        if (name === "global update pack") {
+        let packDir: string | undefined;
+        const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+          if (name === "global update pack") {
+            expect(argv).toEqual([
+              "npm",
+              "pack",
+              sourceSpec,
+              "--pack-destination",
+              expect.any(String),
+              "--json",
+              "--loglevel=error",
+            ]);
+            const destination = argv[4];
+            if (!destination) {
+              throw new Error("missing pack destination");
+            }
+            packDir = destination;
+            await fs.writeFile(path.join(destination, "openclaw-2.0.0.tgz"), "packed\n", "utf8");
+            return {
+              name,
+              command: argv.join(" "),
+              cwd: cwd ?? process.cwd(),
+              durationMs: 1,
+              exitCode: 0,
+            };
+          }
+          if (name !== "global update") {
+            throw new Error(`unexpected step ${name}`);
+          }
+          const prefixIndex = argv.indexOf("--prefix");
+          const stagePrefix = argv[prefixIndex + 1];
+          if (!stagePrefix || !packDir) {
+            throw new Error("missing staged prefix or pack dir");
+          }
           expect(argv).toEqual([
             "npm",
-            "pack",
-            sourceSpec,
-            "--pack-destination",
-            expect.any(String),
-            "--json",
+            "i",
+            "-g",
+            `--allow-scripts=${path.join(packDir, "openclaw-2.0.0.tgz")}`,
+            "--prefix",
+            stagePrefix,
+            path.join(packDir, "openclaw-2.0.0.tgz"),
+            "--no-fund",
+            "--no-audit",
             "--loglevel=error",
+            "--min-release-age=0",
           ]);
-          const destination = argv[4];
-          if (!destination) {
-            throw new Error("missing pack destination");
-          }
-          packDir = destination;
-          await fs.writeFile(path.join(destination, "openclaw-2.0.0.tgz"), "packed\n", "utf8");
+          expect(cwd).toBe(packDir);
+          await writePackageRoot(
+            path.join(stagePrefix, "lib", "node_modules", "openclaw"),
+            "2.0.0",
+          );
+          await fs.mkdir(path.join(stagePrefix, "bin"), { recursive: true });
+          await fs.symlink(
+            "../lib/node_modules/openclaw/dist/index.js",
+            path.join(stagePrefix, "bin", "openclaw"),
+          );
           return {
             name,
             command: argv.join(" "),
@@ -308,67 +353,36 @@ describe("runGlobalPackageUpdateSteps", () => {
             durationMs: 1,
             exitCode: 0,
           };
-        }
-        if (name !== "global update") {
-          throw new Error(`unexpected step ${name}`);
-        }
-        const prefixIndex = argv.indexOf("--prefix");
-        const stagePrefix = argv[prefixIndex + 1];
-        if (!stagePrefix || !packDir) {
-          throw new Error("missing staged prefix or pack dir");
-        }
-        expect(argv).toEqual([
-          "npm",
-          "i",
-          "-g",
-          `--allow-scripts=${path.join(packDir, "openclaw-2.0.0.tgz")}`,
-          "--prefix",
-          stagePrefix,
-          path.join(packDir, "openclaw-2.0.0.tgz"),
-          "--no-fund",
-          "--no-audit",
-          "--loglevel=error",
-          "--min-release-age=0",
+        });
+
+        const result = await runGlobalPackageUpdateSteps({
+          installTarget: createNpmTarget(globalRoot),
+          installSpec: sourceSpec,
+          packageName: "openclaw",
+          packageRoot,
+          runCommand: createRootRunner(globalRoot),
+          runStep,
+          timeoutMs: 1000,
+          workTimeoutMs,
+        });
+
+        expect(result.failedStep).toBeNull();
+        expect(result.afterVersion).toBe("2.0.0");
+        expect(result.steps.map((step) => step.name)).toEqual([
+          "global update pack",
+          "global update",
+          "global install swap",
         ]);
-        expect(cwd).toBe(packDir);
-        await writePackageRoot(path.join(stagePrefix, "lib", "node_modules", "openclaw"), "2.0.0");
-        await fs.mkdir(path.join(stagePrefix, "bin"), { recursive: true });
-        await fs.symlink(
-          "../lib/node_modules/openclaw/dist/index.js",
-          path.join(stagePrefix, "bin", "openclaw"),
-        );
-        return {
-          name,
-          command: argv.join(" "),
-          cwd: cwd ?? process.cwd(),
-          durationMs: 1,
-          exitCode: 0,
-        };
+        for (const [step] of runStep.mock.calls) {
+          expect(step).toMatchObject({ timeoutMs: expectedTimeoutMs });
+        }
+        if (!packDir) {
+          throw new Error("expected npm pack directory");
+        }
+        await expectPathMissing(packDir);
       });
-
-      const result = await runGlobalPackageUpdateSteps({
-        installTarget: createNpmTarget(globalRoot),
-        installSpec: sourceSpec,
-        packageName: "openclaw",
-        packageRoot,
-        runCommand: createRootRunner(globalRoot),
-        runStep,
-        timeoutMs: 1000,
-      });
-
-      expect(result.failedStep).toBeNull();
-      expect(result.afterVersion).toBe("2.0.0");
-      expect(result.steps.map((step) => step.name)).toEqual([
-        "global update pack",
-        "global update",
-        "global install swap",
-      ]);
-      if (!packDir) {
-        throw new Error("expected npm pack directory");
-      }
-      await expectPathMissing(packDir);
-    });
-  });
+    },
+  );
 
   it.each([
     {

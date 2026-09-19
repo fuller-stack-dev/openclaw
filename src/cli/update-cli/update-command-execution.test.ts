@@ -101,7 +101,7 @@ describe("mutable update execution", () => {
       [undefined, 30_000, 600_000].map((timeoutMs) => ({ kind, timeoutMs })),
     ),
   )(
-    "passes only the operator's $timeoutMs ms deadline to $kind candidate validation",
+    "preserves the operator's $timeoutMs ms deadline through $kind execution",
     async ({ kind, timeoutMs }) => {
       const runStagedUpdate = async ({
         validateCandidate,
@@ -122,6 +122,14 @@ describe("mutable update execution", () => {
       });
 
       expect(execution?.result.status).toBe("ok");
+      if (kind === "package") {
+        expect(mocks.runPackageUpdate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            timeoutMs: timeoutMs ?? 30 * 60_000,
+            workTimeoutMs: timeoutMs ?? null,
+          }),
+        );
+      }
       expect(mocks.validateCanary).toHaveBeenCalledOnce();
       expect(mocks.validateCanary.mock.calls[0]?.[0].root).toBe("/candidate");
       expect(mocks.validateCanary.mock.calls[0]?.[0].timeoutMs).toBe(timeoutMs);

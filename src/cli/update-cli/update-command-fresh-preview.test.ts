@@ -11,6 +11,7 @@ import * as updateCheck from "../../infra/update-check.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { finishUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
+import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import { defaultRuntime, ExitError } from "../../runtime.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -762,12 +763,18 @@ it("fresh local artifact reaches compatible target staging without creating pare
 });
 
 it.each([
-  { schema: 16, version: "2026.9.2", code: undefined },
+  { schema: 16, version: "2026.9.2", code: undefined, timeoutMs: undefined },
+  { schema: 16, version: "2026.9.2", code: undefined, timeoutMs: 5000 },
   { schema: undefined, version: "2026.9.2", code: "target-schema-metadata" },
   { schema: 16, version: "invalid", code: "target-version-resolution" },
 ])(
-  "inspects artifact version $version and schema $schema before canonical initialization and history",
-  async ({ schema, version, code }) => {
+  "inspects artifact $version schema $schema with deadline $timeoutMs before initialization and history",
+  async ({ schema, version, code, timeoutMs }) => {
+    const prepare = vi.mocked(commandRun.prepareUpdateCommand).getMockImplementation()!;
+    vi.mocked(commandRun.prepareUpdateCommand).mockImplementation(async (...args) => {
+      const prepared = await prepare(...args);
+      return prepared ? { ...prepared, timeoutMs } : prepared;
+    });
     const candidate = dirs.make("openclaw-artifact-candidate-");
     fs.writeFileSync(
       path.join(candidate, "package.json"),
@@ -784,6 +791,8 @@ it.each([
     const staged = { root: candidate, run: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
     let privateState: string | undefined;
     vi.mocked(packageUpdate.stagePackageInstallUpdate).mockImplementation(async (params) => {
+      expect(params.timeoutMs).toBe(timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS);
+      expect(params.workTimeoutMs).toBe(timeoutMs ?? null);
       privateState = params.installEnv?.OPENCLAW_STATE_DIR;
       expect(privateState).not.toBe(process.env.OPENCLAW_STATE_DIR);
       expect(params.installEnv?.HOME).toBe(process.env.HOME);
@@ -797,6 +806,8 @@ it.each([
     const doctor = vi
       .spyOn(initialization, "initializeUpdateStateFromTarget")
       .mockImplementation(async (params) => {
+        expect(params.timeoutMs).toBe(timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS);
+        expect(params.workTimeoutMs).toBe(timeoutMs ?? null);
         expect(params.root).toBe(candidate);
         expect(params.env.OPENCLAW_STATE_DIR).toBe(process.env.OPENCLAW_STATE_DIR);
         expect(fs.existsSync(fixture.databasePath)).toBe(false);
