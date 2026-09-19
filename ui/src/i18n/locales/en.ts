@@ -239,6 +239,17 @@ export const en: TranslationMap & {
   sessionHovercard: {
     ariaLabel: "Session information",
     agentNotepad: "Agent Notepad",
+    linkedChannel: "Linked to {channel}",
+    viaAccount: "Via {account}",
+    topicNumber: "Topic {id}",
+    sessionParticipants: "In this session",
+    chatKinds: {
+      direct: "Direct chat",
+      group: "Group chat",
+      channel: "Channel",
+      thread: "Thread",
+      topic: "Topic",
+    },
     attributionOther: "& {count} other",
     attributionOthers: "& {count} others",
     moreParticipants: "+{count}",

@@ -110,6 +110,48 @@ describe("GitHub hovercards with authorized session details", () => {
     provider.remove();
   });
 
+  it("keeps seeded profiles and co-author images passive through enrichment", async () => {
+    const { provider, anchor, pending } = createSeededLink();
+    provider.previewSeeds = [
+      {
+        ...seed,
+        author: "Cached author",
+        authorUrl: "javascript:alert(1)",
+        imageUrl: "https://localhost/private.png",
+        coAuthors: [
+          { name: "Ada", imageUrl: "https://images.example/ada.png" },
+          { name: "Mira", imageUrl: "https://127.0.0.1/private.png" },
+        ],
+        coAuthorCount: 3,
+      },
+    ];
+    await hover(anchor);
+    const card = hovercard();
+    expect(card?.querySelector(".link-reader-hovercard__author")?.getAttribute("href")).toBeNull();
+    expect(card?.querySelectorAll("img")).toHaveLength(1);
+    const face = card?.querySelector("img");
+    expect(face?.crossOrigin).toBe("anonymous");
+    face?.dispatchEvent(new Event("error"));
+    expect(face && (!face.isConnected || face.hidden)).toBe(true);
+    expect(card?.querySelector(".link-reader-hovercard__coauthors-more")?.textContent).toBe("+2");
+    const imageUrl =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=";
+    pending.resolve({
+      ...details,
+      authorUrl: "https://github.com/octocat",
+      coAuthors: [{ name: "Ada", imageUrl }],
+      coAuthorCount: 3,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const loaded = card?.querySelector(".link-reader-hovercard__coauthors img");
+    expect(loaded?.getAttribute("src")).toBe(imageUrl);
+    loaded?.dispatchEvent(new Event("load"));
+    expect(loaded?.hasAttribute("hidden")).toBe(false);
+    expect(card?.querySelector(".link-reader-hovercard__author")?.getAttribute("href")).toBe(
+      "https://github.com/octocat",
+    );
+  });
+
   it("replays session seeds assigned before the lazy provider upgrades", async () => {
     const tag = "test-github-seeded-lazy-upgrade";
     const provider = document.createElement(tag) as LinkReaderHovercardProvider;

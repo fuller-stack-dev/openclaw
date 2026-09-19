@@ -25,6 +25,7 @@ const enLinkReader = {
     openExternal: "Open on {provider}",
     openOriginal: "Open original",
     byAuthor: "by {author}",
+    coAuthors: "Co-authors: {authors}",
     description: "Description",
     noDescription: "No description provided.",
     comments: "Comments",

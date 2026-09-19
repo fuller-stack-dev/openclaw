@@ -62,6 +62,65 @@ function attributionSummary(container: ParentNode): string {
 }
 
 describe("renderSessionHovercard", () => {
+  it("puts channel identity before the title and keeps session contributors separate", () => {
+    const container = document.createElement("div");
+    render(
+      renderSessionHovercard({
+        row: row({
+          label: "Weekend plans",
+          workContext: undefined,
+          channelPresentation: {
+            channel: "whatsapp",
+            channelLabel: "WhatsApp",
+            kind: "group",
+            conversation: "Weekend plans",
+            account: "personal",
+          },
+          createdActor: { type: "human", id: "cli", label: "CLI" },
+          participants: [{ identity: { type: "profile", id: "alice" }, label: "Alice" }],
+          participantCount: 1,
+        }),
+      }),
+      container,
+    );
+    const header = container.querySelector(".session-hovercard__header");
+    expect(header?.textContent).toContain("Linked to WhatsApp");
+    expect(header?.textContent).toContain("Group chat");
+    expect(header?.textContent).toContain("Via personal");
+    expect(header?.textContent?.match(/Weekend plans/g)).toHaveLength(1);
+    expect(header?.textContent).not.toContain("CLI");
+    const contributors = container.querySelector('[aria-label="In this session"]');
+    expect(contributors?.textContent).toContain("CLI");
+    expect(contributors?.textContent).toContain("1 other");
+    expect(container.textContent).not.toContain("members");
+  });
+
+  it("shows a direct contact address as text and omits an empty contributor footer", () => {
+    const container = document.createElement("div");
+    render(
+      renderSessionHovercard({
+        row: row({
+          label: "Alex",
+          workContext: undefined,
+          createdActor: undefined,
+          channelPresentation: {
+            channel: "imessage",
+            channelLabel: "iMessage",
+            kind: "direct",
+            address: "alex@example.com",
+          },
+        }),
+      }),
+      container,
+    );
+    expect(container.querySelector(".session-hovercard__conversation")?.textContent).toContain(
+      "alex@example.com",
+    );
+    expect(container.querySelector(".session-hovercard__conversation a")).toBeNull();
+    expect(container.querySelector('[aria-label="In this session"]')).toBeNull();
+    expect(container.textContent).not.toContain("Via");
+  });
+
   it.each([
     [
       { class: "medium", os: "linux", osLabel: "Linux", cpu: 4, memoryGb: 16 },

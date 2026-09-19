@@ -369,7 +369,9 @@ export function renderRecentSession(params: {
     team ? "sidebar-recent-session--team" : "",
     color ? "sidebar-recent-session--colored" : "",
     session.isChild ? "sidebar-recent-session--child" : "",
-    team || !subtitle ? "sidebar-recent-session--single-line" : "",
+    team || (!subtitle && !session.channelPresentation)
+      ? "sidebar-recent-session--single-line"
+      : "",
     session.archived ? "sidebar-session--archived" : "",
     session.visuallyActive ? "sidebar-recent-session--active" : "",
     host.selectedSessionKeys.has(session.key) ? "sidebar-recent-session--selected" : "",
@@ -455,6 +457,7 @@ export function renderRecentSession(params: {
         <span class="sidebar-recent-session__text">
           <span class="sidebar-recent-session__title-row"> ${marqueeLabel} </span>
           <span class="sidebar-recent-session__details">
+            ${session.channelPresentation ? html`<span class="sidebar-recent-session__channel" aria-label=${t("sessionHovercard.linkedChannel", { channel: session.channelPresentation.channelLabel })}>${session.channelPresentation.channelLabel}</span>` : nothing}
             ${team ? nothing : renderSidebarSessionSubtitle({ subtitle, narration })}
             ${indicators.content}
           </span>

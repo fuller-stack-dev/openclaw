@@ -126,6 +126,58 @@ describe("openclaw-link-reader-hovercard-provider", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves co-author faces, missing-face counts, and accessible credit", async () => {
+    const { anchor, provider } = createLink();
+    const imageUrl = preview().imageUrl;
+    connect(
+      provider,
+      vi.fn().mockResolvedValue({
+        ...preview(),
+        authorUrl: "https://github.com/reviewer",
+        coAuthors: [
+          { name: "ada", imageUrl },
+          { name: "mira", imageUrl: "https://127.0.0.1/private.png" },
+          { name: "lin", imageUrl },
+          { name: "noor", imageUrl },
+          { name: "rune", imageUrl },
+        ],
+        coAuthorCount: 7,
+      }),
+    );
+    await hover(anchor);
+    const group = card()?.querySelector(".link-reader-hovercard__coauthors");
+    expect(group?.getAttribute("aria-label")).toContain("ada, mira, lin, noor, rune +2");
+    expect(group?.querySelectorAll(".link-reader-hovercard__coauthor")).toHaveLength(3);
+    expect(group?.querySelector(".link-reader-hovercard__coauthors-more")?.textContent).toBe("+4");
+    const image = group?.querySelector("img");
+    expect(image?.crossOrigin).toBe("anonymous");
+    expect(image?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    image?.dispatchEvent(new Event("error"));
+    expect(image && (!image.isConnected || image.hidden)).toBe(true);
+    expect(image?.parentElement?.textContent).toContain("A");
+    await i18n.setLocale("de");
+    const retainedFace = card()?.querySelector(".link-reader-hovercard__coauthor img");
+    expect(!retainedFace || retainedFace.hasAttribute("hidden")).toBe(true);
+    expect(group?.querySelector(".link-reader-hovercard__coauthors-more")?.textContent).toBe("+4");
+    image?.dispatchEvent(new Event("load"));
+    expect(image?.hidden).toBe(false);
+  });
+
+  it.each([
+    ["https://github.com/reviewer", "https://github.com/reviewer"],
+    ["/reviewer", "https://github.com/reviewer"],
+    ["javascript:alert(1)", null],
+    ["https://other.example/reviewer", null],
+    ["https://name:password@github.com/reviewer", null],
+  ])("only links author profiles on the source origin: %s", async (authorUrl, expected) => {
+    const { anchor, provider } = createLink();
+    connect(provider, vi.fn().mockResolvedValue({ ...preview(), authorUrl }));
+    await hover(anchor);
+    expect(card()?.querySelector(".link-reader-hovercard__author")?.getAttribute("href")).toBe(
+      expected,
+    );
+  });
+
   it("uses a second reader's method and passive DTO with keyboard focus and Escape", async () => {
     const url = "https://forge.example/changes/C42";
     const { anchor, provider } = createLink(url, [github, forge]);
