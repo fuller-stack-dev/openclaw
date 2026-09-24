@@ -41,33 +41,13 @@ import type { ControlUiRegistration } from "../plugins/control-ui-capability.ts"
 import { sidebarPluginTabs } from "./app-sidebar-nav-menus.ts";
 import {
   SIDEBAR_SESSION_NO_ATTENTION,
-  summarizeSidebarSessionAttention,
   type SidebarRecentSession,
   type SidebarSessionSortMode,
   type SidebarSessionStatusFilter,
 } from "./app-sidebar-session-types.ts";
 import { resolveCloudWorkerStopAction } from "./cloud-worker-stop.ts";
-import type { SessionAttentionController } from "./session-attention-controller.ts";
 
 type SessionRow = SessionsListResult["sessions"][number];
-
-export function resolveSidebarHomeAttention(
-  attention: SessionAttentionController,
-  sessionKey: string,
-  row: GatewaySessionRow | null,
-) {
-  const known = summarizeSidebarSessionAttention(
-    attention
-      .knownSessionAttention()
-      .filter((entry) => areUiSessionKeysEquivalent(entry.sessionKey, sessionKey))
-      .map((entry) => entry.attention),
-  );
-  return known.kind !== "none"
-    ? known
-    : row
-      ? attention.resolveSessionAttention(row)
-      : SIDEBAR_SESSION_NO_ATTENTION;
-}
 
 type SidebarSessionSortOptions = {
   sortMode: SidebarSessionSortMode;
@@ -238,6 +218,7 @@ export function buildSidebarSessionNavigationState(input: {
       pinnable: isPinnableUiSessionRow(row),
       archived: row.archived === true,
       visibility: row.visibility,
+      sharingRole: row.sharingRole,
       draftOwnedBySelf: isSidebarDraftOwnedBySelf(row, context?.gateway.snapshot.selfUser?.id),
       category: normalizeOptionalString(row.category),
       icon: normalizeOptionalString(row.icon),
@@ -397,33 +378,6 @@ export function extendSidebarSessionSelection(input: {
   };
 }
 
-function latestVisibleAgentSessionRow(input: {
-  agentId: string;
-  sessionsAgentId: string | null;
-  sessionsResult: SessionsListResult | null;
-  sessionResultsByAgent: Readonly<Record<string, SessionsListResult>>;
-  defaultAgentId: string;
-}): SessionRow | null {
-  const normalized = normalizeAgentId(input.agentId);
-  const rows =
-    normalized === normalizeAgentId(input.sessionsAgentId ?? "")
-      ? (input.sessionsResult?.sessions ?? [])
-      : (input.sessionResultsByAgent[normalized]?.sessions ?? []);
-  // Unprefixed keys belong to the system default agent. Keeping them for
-  // another agent would resume the wrong conversation with the raw key.
-  const visible = filterVisibleSessionRows(rows, {
-    agentId: normalized,
-    defaultAgentId: input.defaultAgentId,
-    filterByAgent: true,
-    archivedFilter: "active",
-  });
-  return visible.reduce<SessionRow | null>(
-    (latest, row) =>
-      latest !== null && compareSessionRowsByUpdatedAt(latest, row) <= 0 ? latest : row,
-    null,
-  );
-}
-
 export function resolveActiveSidebarAgent(input: {
   activeId: string;
   roster: NonNullable<ApplicationContext["agents"]["state"]["agentsList"]>["agents"];
@@ -450,16 +404,28 @@ export function resolveLatestSidebarAgentSession(input: {
   };
   context: ApplicationContext | undefined;
 }): SessionRow | null {
-  return latestVisibleAgentSessionRow({
-    agentId: input.agentId,
-    sessionsAgentId: input.sessionData.sessionsAgentId,
-    sessionsResult: input.sessionData.sessionsResult,
-    sessionResultsByAgent: input.sessionData.sessionResultsByAgent,
+  const { sessionData } = input;
+  const normalized = normalizeAgentId(input.agentId);
+  const rows =
+    normalized === normalizeAgentId(sessionData.sessionsAgentId ?? "")
+      ? (sessionData.sessionsResult?.sessions ?? [])
+      : (sessionData.sessionResultsByAgent[normalized]?.sessions ?? []);
+  // Unprefixed keys belong to the system default agent. Keeping them for
+  // another agent would resume the wrong conversation with the raw key.
+  const visible = filterVisibleSessionRows(rows, {
+    agentId: normalized,
     defaultAgentId: resolveUiDefaultAgentId({
       agentsList: input.context?.agents.state.agentsList,
       hello: input.context?.gateway.snapshot.hello,
     }),
+    filterByAgent: true,
+    archivedFilter: "active",
   });
+  return visible.reduce<SessionRow | null>(
+    (latest, row) =>
+      latest !== null && compareSessionRowsByUpdatedAt(latest, row) <= 0 ? latest : row,
+    null,
+  );
 }
 
 export function collectSidebarSessionRowsByKey(input: {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PackageUpdateStepRunner } from "./package-update-lifecycle.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
+import { isFailedUpdateStep } from "./update-run-step.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
 const NPM_PACK_QUIET_FLAGS = ["--json", "--loglevel=error"] as const;
@@ -93,7 +94,7 @@ export async function prepareNpmGitSourceInstallSpec(params: {
 
   const packDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-update-pack-"));
   const packStep = await params.runStep({
-    name: "global update pack",
+    name: "package-pack",
     argv: [
       params.installTarget.command,
       "pack",
@@ -106,7 +107,7 @@ export async function prepareNpmGitSourceInstallSpec(params: {
     env: params.env,
     timeoutMs: params.timeoutMs,
   });
-  if (packStep.exitCode !== 0) {
+  if (isFailedUpdateStep(packStep)) {
     return {
       installSpec: params.installSpec,
       installCwd: params.installCwd ?? null,
@@ -119,7 +120,7 @@ export async function prepareNpmGitSourceInstallSpec(params: {
   const tarball = await findPackedTarball(packDir);
   if (!tarball) {
     const failedStep: UpdateStepResult = {
-      name: "global update pack verify",
+      name: "package-pack-verify",
       command: `find packed tarball in ${packDir}`,
       cwd: packDir,
       durationMs: 0,

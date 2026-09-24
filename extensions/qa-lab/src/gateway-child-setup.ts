@@ -68,6 +68,7 @@ export type QaGatewayChildParams = {
   command?: QaGatewayChildCommand;
   useRepoCli?: boolean;
   providerBaseUrl?: string;
+  mockSessionObserverUrl?: string;
   transport?: Pick<QaTransportAdapter, "requiredPluginIds" | "createGatewayConfig">;
   transportBaseUrl: string;
   controlUiAllowedOrigins?: string[];
@@ -258,6 +259,7 @@ export async function prepareQaGatewayChild(
       // instead of making older release candidates appear to be downgrades.
       stampCurrentVersion: !usesPackagedCandidate,
       providerBaseUrl: params.providerBaseUrl,
+      mockSessionObserverUrl: params.mockSessionObserverUrl,
       workspaceDir,
       controlUiRoot: resolveQaControlUiRoot({
         repoRoot: params.repoRoot,
@@ -483,12 +485,12 @@ export async function prepareQaGatewayChild(
       // Packaged repair must inspect the configured port without our placeholder listener.
       await lifetime.portReservation?.release();
       lifetime.portReservation = null;
+      // Auth staging opens parent-owned agent stores. Release this fixture's
+      // leases before packaged repair or Gateway startup takes maintenance ownership.
+      await closeQaRuntimeStores(tempRoot);
       lifetime.assertOpen();
 
       if (!reuseStartupLaunchState && usesPackagedCandidate && gatewayCommand) {
-        // Live auth staging opens parent-owned agent stores. Release this
-        // fixture's leases before the child Doctor takes maintenance ownership.
-        await closeQaRuntimeStores(tempRoot);
         const command = {
           lifetime,
           executablePath: gatewayCommand.executablePath,

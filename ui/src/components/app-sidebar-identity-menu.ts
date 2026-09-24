@@ -25,6 +25,7 @@ import {
   moveSidebarMenuFocus,
   renderSidebarHelpMenu,
 } from "./app-sidebar-agent-menu.ts";
+import { renderSidebarMenuTrigger } from "./app-sidebar-nav-menus.ts";
 import { icons } from "./icons.ts";
 import "./sidebar-build-chip.ts";
 import "./viewer-facepile.ts";
@@ -37,7 +38,7 @@ type SidebarIdentityMenuParams = {
   gatewayVersion: string | null;
   updateAttentionDismissed: boolean;
   profileViewer?: PresenceViewer;
-  offline: boolean;
+  canRetryConnection: boolean;
   themeMode: ThemeMode;
   triggerWidth: number;
   onTabAway: () => void;
@@ -215,14 +216,11 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
       }}
       @wa-after-hide=${(event: Event) => closeMenuAfterOwnDropdownHide(event, params.onClose)}
     >
-      <button
-        slot="trigger"
-        type="button"
-        tabindex="-1"
-        aria-hidden="true"
-        aria-label=${t("profilePage.identity.menuLabel")}
-        style="position: fixed; left: ${position.x}px; bottom: ${position.bottom}px; width: 1px; height: 1px; opacity: 0; pointer-events: none;"
-      ></button>
+      ${renderSidebarMenuTrigger(
+        { x: position.x, y: position.bottom },
+        t("profilePage.identity.menuLabel"),
+        "bottom",
+      )}
       <wa-dropdown-item
         class="sidebar-customize-menu__item sidebar-identity-menu__header"
         value="command:profile"
@@ -278,7 +276,7 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
       <div class="sidebar-customize-menu__separator" role="separator"></div>
       ${renderSidebarHelpMenu()}
       ${
-        params.offline
+        params.canRetryConnection
           ? html`<div class="sidebar-customize-menu__separator" role="separator"></div>
               <wa-dropdown-item
                 class="sidebar-customize-menu__item sidebar-identity-menu__retry"
@@ -301,7 +299,10 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
           }}
         ></openclaw-sidebar-build-chip>
         <span class="sidebar-mode-switch">
-          <openclaw-theme-mode-toggle .mode=${params.themeMode}></openclaw-theme-mode-toggle>
+          <openclaw-theme-mode-toggle
+            .mode=${params.themeMode}
+            .menuItem=${true}
+          ></openclaw-theme-mode-toggle>
         </span>
       </div>
     </wa-dropdown>

@@ -1,5 +1,7 @@
 import type { MessagePort } from "node:worker_threads";
 import type { OpenClawStateWorkerErrorPayload } from "../state/openclaw-state-worker-error.js";
+import type { SqliteWalCheckpointSnapshot } from "./sqlite-wal-checkpoint.js";
+import type { DatabasePathIdentity } from "./sqlite-worker-identity.js";
 import type { SqliteWorkerStateContext } from "./sqlite-worker-state-context.js";
 import type { SqliteWorkerTransferHandle } from "./sqlite-worker-transfer.js";
 
@@ -9,19 +11,30 @@ export type SqliteWorkerCommand<Operations extends SqliteWorkerOperations> = {
 }[keyof Operations];
 
 export type SqliteWorkerBackend<Operations extends SqliteWorkerOperations> = {
+  /** Load command prerequisites before synchronous execution enters native work. */
+  prepare?(command: SqliteWorkerCommand<Operations>): void | Promise<void>;
   execute(command: SqliteWorkerCommand<Operations>): Operations[keyof Operations]["output"];
   /** Synchronously reject native state that requires retirement before releasing the operation. */
   assertSettled?(): void;
   close(): void | Promise<void>;
 };
 
+/** Recorded during successful native close; this fact never grants database access. */
+export type SqliteWorkerCloseReceipt = {
+  identity: DatabasePathIdentity;
+  incarnation: string;
+  checkpoint: SqliteWalCheckpointSnapshot;
+};
+
 // Source fixtures and compiled backends can load separate copies in the same Worker.
 export const SQLITE_WORKER_PREPARE_COMMAND = Symbol.for("openclaw.sqliteWorkerPrepareCommand");
+export const SQLITE_WORKER_CLOSE_RECEIPT = Symbol.for("openclaw.sqliteWorkerCloseReceipt");
 
-/** Internal code-loading hook; the public SDK backend remains synchronous. */
+/** Internal preparation and cleanup facts; public SDK operation and close contracts stay unchanged. */
 export type SqliteWorkerPreparedBackend<Operations extends SqliteWorkerOperations> =
   SqliteWorkerBackend<Operations> & {
     [SQLITE_WORKER_PREPARE_COMMAND]?(commandType: keyof Operations): void | Promise<void>;
+    [SQLITE_WORKER_CLOSE_RECEIPT]?(): SqliteWorkerCloseReceipt | undefined;
   };
 
 export type SqliteWorkerStore<Operations extends SqliteWorkerOperations> = {
@@ -42,6 +55,7 @@ export type SqliteWorkerRequest = {
   workerStateLifecycle?: { deadlineNs: bigint };
   lifecyclePreparation?: MessagePort;
   operationAdmission?: MessagePort;
+  stateDatabasePath?: string;
 } & (
   | {
       type: "open";
@@ -49,7 +63,9 @@ export type SqliteWorkerRequest = {
       sourceLoaderUrl?: string;
       databasePath: string;
       existingIdentity?: string;
+      openAdmission?: "input" | "identity";
       input: Uint8Array;
+      preparation?: Uint8Array;
     }
   | { type: "execute"; input: Uint8Array }
   | { type: "execute-start"; transfer: SqliteWorkerTransferHandle }
@@ -62,10 +78,17 @@ export type SqliteWorkerReply = {
   id: number;
   cleanupFailure?: OpenClawStateWorkerErrorPayload;
 } & (
-  | { ok: true; value: Uint8Array; transfer?: "start" | "frame"; input?: "next" }
+  | {
+      ok: true;
+      value: Uint8Array;
+      transfer?: "start" | "frame";
+      input?: "next";
+      closeReceipt?: SqliteWorkerCloseReceipt;
+    }
   | {
       ok: false;
       retire?: true;
+      openOutcome?: "refused-before-agent-open";
       openNotEntered?: true;
       error: {
         name: string;

@@ -3,12 +3,11 @@ import type { Static } from "typebox";
 import { Type } from "typebox";
 import { AgentDatabaseAdmissionRefusalSchema } from "./agent-database-admission.js";
 import { closedObject } from "./closed-object.js";
-import { ModelAuthProfileIdSchema } from "./model-account-selection.js";
 import {
   GatewayAgentRuntimeSchema,
   GatewayThinkingLevelOptionSchema,
 } from "./model-runtime-options.js";
-import { NonEmptyString } from "./primitives.js";
+import { NonEmptyString, Sha256String } from "./primitives.js";
 import { GitHubSetupHandleSchema } from "./secrets.js";
 import { SessionPermissionModeSchema } from "./sessions-row.js";
 
@@ -16,12 +15,14 @@ export {
   ModelChoiceSchema,
   ModelRuntimeChoiceSchema,
   ModelCatalogProviderOutcomeSchema,
+  ModelsListParamsSchema,
   ModelsListResultSchema,
 } from "./model-catalog.js";
 export type {
   ModelChoice,
   ModelRuntimeChoice,
   ModelCatalogProviderOutcome,
+  ModelsListParams,
   ModelsListResult,
 } from "./model-catalog.js";
 
@@ -122,6 +123,8 @@ export const AgentsUpdateParamsSchema = closedObject({
   name: Type.Optional(NonEmptyString),
   workspace: Type.Optional(NonEmptyString),
   model: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
+  /** Exact catalog runtime for a model-only selection; native authentication stays with it. */
+  agentRuntime: Type.Optional(NonEmptyString),
   emoji: Type.Optional(Type.String()),
   avatar: Type.Optional(Type.String()),
 });
@@ -161,106 +164,6 @@ export const AgentsDeleteResultSchema = closedObject({
   ),
   purgeFailed: Type.Optional(Type.Literal(true)),
 });
-
-const Sha256String = Type.String({
-  minLength: 64,
-  maxLength: 64,
-  pattern: "^[a-fA-F0-9]{64}$",
-});
-
-/** File metadata and optional content for agent-local editable files. */
-export const AgentsFileEntrySchema = closedObject({
-  name: NonEmptyString,
-  path: NonEmptyString,
-  missing: Type.Boolean(),
-  // True when absence is a normal workspace state (optional profile files, and
-  // MEMORY.md before anything is written). Editors should offer these for
-  // creation rather than flagging them as faults.
-  expectedAbsent: Type.Optional(Type.Boolean()),
-  size: Type.Optional(Type.Integer({ minimum: 0 })),
-  updatedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
-  hash: Type.Optional(Sha256String),
-  content: Type.Optional(Type.String()),
-});
-
-/** Lists editable files for one agent. */
-export const AgentsFilesListParamsSchema = closedObject({
-  agentId: NonEmptyString,
-});
-
-/** Editable file list for an agent workspace. */
-export const AgentsFilesListResultSchema = closedObject({
-  agentId: NonEmptyString,
-  workspace: NonEmptyString,
-  files: Type.Array(AgentsFileEntrySchema),
-});
-
-/** Reads one editable agent file by name. */
-export const AgentsFilesGetParamsSchema = closedObject({
-  agentId: NonEmptyString,
-  name: NonEmptyString,
-});
-
-/** Result for reading one editable agent file. */
-export const AgentsFilesGetResultSchema = closedObject({
-  agentId: NonEmptyString,
-  workspace: NonEmptyString,
-  file: AgentsFileEntrySchema,
-});
-
-/** Writes one editable agent file. */
-export const AgentsFilesSetParamsSchema = closedObject({
-  agentId: NonEmptyString,
-  name: NonEmptyString,
-  content: Type.String(),
-  expectedHash: Type.Optional(Sha256String),
-});
-
-/** Result returned after writing an editable agent file. */
-export const AgentsFilesSetResultSchema = closedObject({
-  ok: Type.Literal(true),
-  agentId: NonEmptyString,
-  workspace: NonEmptyString,
-  file: AgentsFileEntrySchema,
-});
-
-/** Model catalog request with optional visibility scope. */
-export const ModelsListParamsSchema = Type.Object(
-  {
-    agentId: Type.Optional(NonEmptyString),
-    sessionKey: Type.Optional(NonEmptyString),
-    authProfileId: Type.Optional(ModelAuthProfileIdSchema),
-    provider: Type.Optional(NonEmptyString),
-    includeDetails: Type.Optional(Type.Boolean()),
-    includeProviderCapabilities: Type.Optional(Type.Boolean()),
-    /** Include global default-model previews, independent of agent/session overrides. */
-    includeDefaultModels: Type.Optional(Type.Boolean()),
-    /** Reuse prepared/cached facts without starting provider discovery. */
-    preparedOnly: Type.Optional(Type.Boolean()),
-    /** Force replacement of a completed full-catalog generation. */
-    refresh: Type.Optional(Type.Boolean()),
-    view: Type.Optional(
-      Type.Union([
-        Type.Literal("default"),
-        Type.Literal("configured"),
-        Type.Literal("provider-config"),
-        Type.Literal("all"),
-      ]),
-    ),
-  },
-  {
-    additionalProperties: false,
-    allOf: [
-      {
-        not: {
-          properties: { preparedOnly: { const: true }, refresh: { const: true } },
-          required: ["preparedOnly", "refresh"],
-        },
-      },
-      { not: { required: ["sessionKey", "authProfileId"] } },
-    ],
-  },
-);
 
 /** Reads model-provider credential health for one configured agent. */
 export const ModelsAuthStatusParamsSchema = closedObject({
@@ -1280,22 +1183,14 @@ export const ToolsInvokeResultSchema = closedObject({
 export type AgentKind = Static<typeof AgentKindSchema>;
 export type AgentSummary = Static<typeof AgentSummarySchema>;
 export type GatewayAgentRuntime = Static<typeof GatewayAgentRuntimeSchema>;
-export type AgentsFileEntry = Static<typeof AgentsFileEntrySchema>;
 export type AgentsCreateParams = Static<typeof AgentsCreateParamsSchema>;
 export type AgentsCreateResult = Static<typeof AgentsCreateResultSchema>;
 export type AgentsUpdateParams = Static<typeof AgentsUpdateParamsSchema>;
 export type AgentsUpdateResult = Static<typeof AgentsUpdateResultSchema>;
 export type AgentsDeleteParams = Static<typeof AgentsDeleteParamsSchema>;
 export type AgentsDeleteResult = Static<typeof AgentsDeleteResultSchema>;
-export type AgentsFilesListParams = Static<typeof AgentsFilesListParamsSchema>;
-export type AgentsFilesListResult = Static<typeof AgentsFilesListResultSchema>;
-export type AgentsFilesGetParams = Static<typeof AgentsFilesGetParamsSchema>;
-export type AgentsFilesGetResult = Static<typeof AgentsFilesGetResultSchema>;
-export type AgentsFilesSetParams = Static<typeof AgentsFilesSetParamsSchema>;
-export type AgentsFilesSetResult = Static<typeof AgentsFilesSetResultSchema>;
 export type AgentsListParams = Static<typeof AgentsListParamsSchema>;
 export type AgentsListResult = Static<typeof AgentsListResultSchema>;
-export type ModelsListParams = Static<typeof ModelsListParamsSchema>;
 export type ModelsAuthSetApiKeyParams = Static<typeof ModelsAuthSetApiKeyParamsSchema>;
 export type ModelsAuthSetApiKeyResult = Static<typeof ModelsAuthSetApiKeyResultSchema>;
 export type ModelsAuthStatusParams = Static<typeof ModelsAuthStatusParamsSchema>;
