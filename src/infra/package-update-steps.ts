@@ -1,7 +1,6 @@
 // Runs package update move, inventory, and cleanup steps.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { validRange } from "semver";
 import { LEGACY_PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "../../scripts/lib/package-lifecycle-marker.mjs";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
@@ -57,7 +56,10 @@ import {
   type ResolvedGlobalInstallTarget,
 } from "./update-global.js";
 import { resolvePnpmGlobalDirFromGlobalRoot } from "./update-native-package-owner.js";
-import { prepareNativePackageStage } from "./update-native-package-stage.js";
+import {
+  prepareNativePackageStage,
+  resolveNativeInstallSpecFromCwd,
+} from "./update-native-package-stage.js";
 import {
   readPackageManagerProbeValue,
   resolveNpmGlobalPrefixLayoutFromGlobalRoot,
@@ -103,63 +105,6 @@ function isRegistrySourceInstallSpec(spec: string): boolean {
     !archive.test(selector) &&
     (validRange(selector, true) !== null || encodeURIComponent(selector) === selector)
   );
-}
-
-function resolveNativeInstallSpecFromCwd(
-  spec: string,
-  packageName: string,
-  sourceCwd: string,
-  manager: "pnpm" | "bun",
-): string {
-  const trimmed = spec.trim();
-  const aliasPrefix = `${packageName.trim()}@`;
-  const hasAlias = trimmed.toLowerCase().startsWith(aliasPrefix.toLowerCase());
-  const targetSpec = hasAlias ? trimmed.slice(aliasPrefix.length).trim() : trimmed;
-  const windowsPath = /^[a-z]:[\\/]/iu.test(sourceCwd) || sourceCwd.startsWith("\\\\");
-  const paths = windowsPath ? path.win32 : path;
-  const localProtocol = /^(file:|git\+file:|link:)(.*)$/iu.exec(targetSpec);
-  if (localProtocol) {
-    const protocol = localProtocol[1] ?? "";
-    // Bun's link: names refer to its global link registry, not caller-relative directories.
-    if (manager === "bun" && protocol.toLowerCase() === "link:") {
-      return spec;
-    }
-    const target = localProtocol[2]?.trim() ?? "";
-    const fragmentIndex = protocol.toLowerCase() === "git+file:" ? target.indexOf("#") : -1;
-    const targetPath = fragmentIndex >= 0 ? target.slice(0, fragmentIndex) : target;
-    const fragment = fragmentIndex >= 0 ? target.slice(fragmentIndex) : "";
-    const resolvedTarget =
-      targetPath &&
-      !/^~[\\/]/u.test(targetPath) &&
-      !path.isAbsolute(targetPath) &&
-      !path.win32.isAbsolute(targetPath)
-        ? paths.resolve(sourceCwd, targetPath)
-        : targetPath;
-    if (protocol.toLowerCase() === "git+file:") {
-      return resolvedTarget === targetPath
-        ? spec
-        : `${hasAlias ? aliasPrefix : ""}git+${pathToFileURL(resolvedTarget, { windows: windowsPath }).href}${fragment}`;
-    }
-    return `${aliasPrefix}${protocol}${resolvedTarget}`;
-  }
-  const isPath =
-    /^(?:\.{1,2}|~)(?:[\\/]|$)/u.test(targetSpec) ||
-    path.isAbsolute(targetSpec) ||
-    path.win32.isAbsolute(targetSpec);
-  // Match the updater's explicit archive targets; bare .tar remains a registry name.
-  if (
-    !isPath &&
-    (hasAlias || /[:@]/u.test(targetSpec) || !/\.(?:tgz|tar\.gz)$/iu.test(targetSpec))
-  ) {
-    return spec;
-  }
-  const target =
-    isPath && !/^\.{1,2}(?:[\\/]|$)/u.test(targetSpec)
-      ? targetSpec
-      : paths.resolve(sourceCwd, targetSpec);
-  // Native pnpm needs a package name; source links must follow atomic file replacements.
-  const protocol = manager === "bun" || /\.(?:tgz|tar\.gz|tar)$/iu.test(target) ? "file" : "link";
-  return `${aliasPrefix}${protocol}:${target}`;
 }
 
 async function createStagedPackageInstall(
@@ -275,6 +220,8 @@ export async function runGlobalPackageUpdateSteps(params: {
   env?: NodeJS.ProcessEnv;
   installCwd?: string;
   postVerifyStep?: PackagePostInstallVerifier;
+  beforeVerifyCandidate?: (packageRoot: string) => Promise<void>;
+  resolveLifecycleNodeRunner?: () => string | undefined;
   validateCandidate?: (packageRoot: string) => Promise<UpdateStepResult[]>;
   beforeActivate?: () => Promise<void>;
   assertCurrent?: () => void;
@@ -385,7 +332,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       return await packageUpdateFailure(pnpmPreflight.failedStep);
     }
     const packageRoot = params.packageRoot ?? params.installTarget.packageRoot;
-    if (packageRoot) {
+    if (packageRoot && !params.beforeVerifyCandidate) {
       // Lifecycle policy must refuse before cleanup can remove an interrupted update backup.
       await cleanupGlobalRenameDirs({
         globalRoot: path.dirname(packageRoot),
@@ -620,6 +567,15 @@ export async function runGlobalPackageUpdateSteps(params: {
     }
 
     const verificationPackageRoot = stagedInstall.packageRoot;
+    await params.beforeVerifyCandidate?.(verificationPackageRoot);
+    if (packageRoot && params.beforeVerifyCandidate) {
+      // Admission staging owns only its private prefix. Retire old backups only
+      // after the supervisor resumes admitted package preparation.
+      await cleanupGlobalRenameDirs({
+        globalRoot: path.dirname(packageRoot),
+        packageName: params.packageName,
+      });
+    }
     const candidateVersion = await readPackageVersion(verificationPackageRoot);
     const expectedVersion = resolveExpectedInstalledVersionFromSpec(
       params.packageName,
@@ -674,6 +630,7 @@ export async function runGlobalPackageUpdateSteps(params: {
     if (blockingVerificationErrors.length === 0) {
       const lifecycle = await runPackageUpdateLifecycle({
         packageRoot: verificationPackageRoot,
+        nodeRunner: params.resolveLifecycleNodeRunner?.(),
         manager: params.installTarget.manager,
         timeoutMs: params.timeoutMs,
         workTimeoutMs: params.workTimeoutMs,
