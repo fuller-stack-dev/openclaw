@@ -134,27 +134,37 @@ export async function enforceWorktreeCleanupLimits(
   if (limits.maxTotalSizeBytes !== undefined) {
     await refreshTotals();
   }
-  const recordLimitState = () =>
-    withWorktreeAllocationLease({ env: params.env }, async () => {
-      try {
-        await assertRecoveryPins(params.env);
-      } catch (error) {
-        progress.error("limits", error);
-      }
-      // Keep the whole reporting snapshot under removal authority. Missing-row
-      // retirement may still run independently, so refresh membership last.
-      const { liveIds } = await refreshTotals();
-      try {
-        assertNoPendingRemovals(params.env, liveIds);
-      } catch (error) {
-        progress.error("limits", error);
-      }
-      progress.recordLimitState(!overLimit(), inventoryComplete);
-      return liveIds;
-    });
+  const recordLimitState = async () => {
+    try {
+      return await withWorktreeAllocationLease({ env: params.env }, async () => {
+        try {
+          await assertRecoveryPins(params.env);
+        } catch (error) {
+          progress.error("limits", error);
+        }
+        // Keep the whole reporting snapshot under removal authority. Missing-row
+        // retirement may still run independently, so refresh membership last.
+        const { liveIds } = await refreshTotals();
+        try {
+          assertNoPendingRemovals(params.env, liveIds);
+        } catch (error) {
+          progress.error("limits", error);
+        }
+        progress.recordLimitState(!overLimit(), inventoryComplete);
+        return liveIds;
+      });
+    } catch (error) {
+      // Failure to acquire or retain reporting authority leaves compliance
+      // unknown, but must not discard the result or skip later GC maintenance.
+      progress.hasUnreconciledRemoval = true;
+      progress.error("limits", error);
+      progress.recordLimitState(false);
+      return undefined;
+    }
+  };
   if (!overLimit()) {
     const remainingIds = await recordLimitState();
-    if (progress.result.limitsSatisfied !== true) {
+    if (remainingIds !== undefined && progress.result.limitsSatisfied !== true) {
       recordNewIds(remainingIds);
     }
     return [];
@@ -200,7 +210,7 @@ export async function enforceWorktreeCleanupLimits(
     removed.push(record.id);
   }
   const remainingIds = await recordLimitState();
-  if (progress.result.limitsSatisfied !== true) {
+  if (remainingIds !== undefined && progress.result.limitsSatisfied !== true) {
     for (const record of live) {
       if (!remainingIds.has(record.id) || !progress.start(record.id)) {
         continue;
