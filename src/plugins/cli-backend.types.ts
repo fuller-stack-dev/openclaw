@@ -415,7 +415,17 @@ export type CliBackendModelCatalogContext = {
 };
 
 export type CliBackendModelCatalogResult = {
-  models: Readonly<Record<string, { available: boolean; reason?: string }>>;
+  models: Readonly<
+    Record<
+      string,
+      {
+        available: boolean;
+        reason?: string;
+        /** Unknown requirements remain unavailable in catalogs but allow explicit CLI execution. */
+        compatibility?: "unknown";
+      }
+    >
+  >;
   /** Cached deadline consumed by inventory requests; the host does not start a timer. */
   nextCheckAt?: number;
   /** Verified serving version, also usable as a warm-process fingerprint input. */

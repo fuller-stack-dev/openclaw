@@ -3,6 +3,7 @@ import type {
   ModelCatalogProviderOutcome,
   ModelChoice,
 } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
+import type { ModelAuthAvailabilityEvaluation } from "../../agents/model-auth-availability.js";
 import { isLocalBaseUrl } from "../../agents/model-catalog-route.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import type { ProviderCatalogOutcome } from "../../plugins/provider-catalog.types.js";
@@ -58,4 +59,19 @@ export function projectProviderCatalogOutcomes(
     ...(profileId ? { profileId } : {}),
     status,
   }));
+}
+
+/** Keep runtime installation failures separate from account unavailability. */
+export function projectCliRuntimeCompatibility(
+  evaluation: ModelAuthAvailabilityEvaluation,
+): Pick<ModelChoice, "runtimeCompatibilityReason" | "runtimeCompatibilityNextCheckAt"> {
+  if (evaluation.availability !== false || !evaluation.runtimeCompatibilityReason) {
+    return {};
+  }
+  return {
+    runtimeCompatibilityReason: evaluation.runtimeCompatibilityReason,
+    ...(evaluation.runtimeCompatibilityNextCheckAt !== undefined
+      ? { runtimeCompatibilityNextCheckAt: evaluation.runtimeCompatibilityNextCheckAt }
+      : {}),
+  };
 }

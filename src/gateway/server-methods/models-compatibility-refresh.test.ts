@@ -2,16 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { validateModelsListParams } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
-import {
-  captureGatewayDeviceRevocation,
-  invalidateGatewayDeviceRevocation,
-} from "../device-revocation.js";
+import * as deviceRevocation from "../device-revocation.js";
 import {
   authorizeOperatorScopesForMethod,
   projectOperatorScopesForMethod,
   resolveLeastPrivilegeOperatorScopesForMethod,
 } from "../method-scopes.js";
-import { publishOperatorRoleConfigChange } from "../operator-role-policy.js";
+import * as operatorRolePolicy from "../operator-role-policy.js";
 import { captureModelsCliCompatibilityRefresh } from "./models-compatibility-refresh.js";
 import { modelsHandlers } from "./models.js";
 import type {
@@ -151,7 +148,7 @@ describe("manual model CLI compatibility refresh", () => {
     "cancels in-flight maintenance on its %s revocation event",
     async (kind) => {
       const options = createRequest(["operator.write"]);
-      const captured = captureGatewayDeviceRevocation(
+      const captured = deviceRevocation.captureGatewayDeviceRevocation(
         options.context,
         { deviceId: "maintenance-device", role: "operator" },
         () => true,
@@ -169,14 +166,14 @@ describe("manual model CLI compatibility refresh", () => {
       );
       try {
         if (kind === "device") {
-          invalidateGatewayDeviceRevocation(options.context, "other-device");
+          deviceRevocation.invalidateGatewayDeviceRevocation(options.context, "other-device");
           expect(refresh.signal?.aborted).toBe(false);
-          invalidateGatewayDeviceRevocation(options.context, "maintenance-device");
+          deviceRevocation.invalidateGatewayDeviceRevocation(options.context, "maintenance-device");
         } else {
           options.client!.connect.scopes = ["operator.read"];
-          publishOperatorRoleConfigChange({});
+          operatorRolePolicy.publishOperatorRoleConfigChange({});
           expect(refresh.signal?.aborted).toBe(false);
-          publishOperatorRoleConfigChange(options.context);
+          operatorRolePolicy.publishOperatorRoleConfigChange(options.context);
         }
         expect(refresh.signal?.aborted).toBe(true);
         expect(await outcome).toMatchObject({ name: "AbortError" });
@@ -192,27 +189,63 @@ describe("manual model CLI compatibility refresh", () => {
 
   it("releases revocation subscriptions when manual request work is finished", () => {
     const options = createRequest(["operator.write"]);
-    const captured = captureGatewayDeviceRevocation(
+    const captured = deviceRevocation.captureGatewayDeviceRevocation(
       options.context,
       { deviceId: "released-device" },
       () => true,
     );
     options.hasCurrentClientAuthority = captured.isCurrent;
-    const guard = vi.fn();
-    options.sessionMutationCommitGuard = guard;
-    const refresh = captureModelsCliCompatibilityRefresh(options);
+    const subscribeDevice = deviceRevocation.onGatewayDeviceSourceRevoked;
+    const subscribePolicy = operatorRolePolicy.onOperatorRolePolicyChanged;
+    const deviceEvent = vi.fn();
+    const policyEvent = vi.fn();
+    const subscriptions: Array<() => void> = [];
+    const deviceSubscription = vi
+      .spyOn(deviceRevocation, "onGatewayDeviceSourceRevoked")
+      .mockImplementation((guard, listener) => {
+        const unsubscribe = subscribeDevice(guard, () => {
+          deviceEvent();
+          listener();
+        });
+        if (unsubscribe) {
+          subscriptions.push(unsubscribe);
+        }
+        return unsubscribe;
+      });
+    const policySubscription = vi
+      .spyOn(operatorRolePolicy, "onOperatorRolePolicyChanged")
+      .mockImplementation((listener) => {
+        const unsubscribe = subscribePolicy((change) => {
+          policyEvent();
+          listener(change);
+        });
+        subscriptions.push(unsubscribe);
+        return unsubscribe;
+      });
+    let refresh: ReturnType<typeof captureModelsCliCompatibilityRefresh> | undefined;
     try {
+      refresh = captureModelsCliCompatibilityRefresh(options);
+      expect(subscriptions).toHaveLength(2);
+      operatorRolePolicy.publishOperatorRoleConfigChange(options.context);
+      expect(policyEvent).toHaveBeenCalledOnce();
+      expect(refresh.signal.aborted).toBe(false);
+      policyEvent.mockClear();
       refresh.release();
-      expect(refresh.signal?.aborted).toBe(true);
-      expect(() => refresh.assertCurrent()).toThrow("Manual CLI compatibility request finished");
-      const calls = guard.mock.calls.length;
+      expect(refresh.signal.aborted).toBe(true);
+      expect(() => refresh!.assertCurrent()).toThrow("Manual CLI compatibility request finished");
       options.client!.connect.scopes = ["operator.read"];
-      publishOperatorRoleConfigChange(options.context);
-      invalidateGatewayDeviceRevocation(options.context, "released-device");
-      expect(guard).toHaveBeenCalledTimes(calls);
+      operatorRolePolicy.publishOperatorRoleConfigChange(options.context);
+      deviceRevocation.invalidateGatewayDeviceRevocation(options.context, "released-device");
+      expect(policyEvent).not.toHaveBeenCalled();
+      expect(deviceEvent).not.toHaveBeenCalled();
     } finally {
-      refresh.release();
+      refresh?.release();
+      for (const unsubscribe of subscriptions) {
+        unsubscribe();
+      }
       captured.release();
+      deviceSubscription.mockRestore();
+      policySubscription.mockRestore();
     }
   });
 });

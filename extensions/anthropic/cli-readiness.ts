@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import type {
-  CliBackendModelCatalogContext,
-  CliBackendModelCatalogResult,
+import {
+  racePromiseWithAbortSignal,
+  type CliBackendModelCatalogContext,
+  type CliBackendModelCatalogResult,
 } from "openclaw/plugin-sdk/cli-backend";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { CLAUDE_CLI_ROUTE_PROBE_MODEL_IDS, CLAUDE_MODEL_ID_ALIASES } from "./cli-constants.js";
@@ -83,7 +84,8 @@ function project(
             id,
             {
               available: false,
-              reason: `Claude CLI compatibility for ${id} is not known. Use its direct API route or update OpenClaw's model catalog.`,
+              compatibility: "unknown",
+              reason: `Claude CLI compatibility for ${id} is not known. Explicit selections are passed to Claude CLI without verified compatibility.`,
             },
           ];
         }
@@ -328,7 +330,7 @@ export function createClaudeCliReadiness(
       if (!current) {
         break;
       }
-      const shared = await current.promise;
+      const shared = await racePromiseWithAbortSignal(current.promise, context.signal);
       context.assertCurrent();
       context.signal.throwIfAborted();
       if (

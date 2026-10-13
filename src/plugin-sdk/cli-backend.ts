@@ -1,5 +1,5 @@
 /**
- * Public SDK type surface for CLI backend plugins and watchdog defaults.
+ * Public CLI backend types, lifecycle helpers, and watchdog defaults.
  */
 export type {
   CliBackendAuthEpochMode,
@@ -39,6 +39,7 @@ export type {
 } from "../plugins/cli-backend.types.js";
 export type { CliBackendRuntimeArtifactPolicy } from "../plugins/cli-backend.types.js";
 export { CliBackendAuthProfilePreparationError } from "../plugins/cli-backend-errors.js";
+export { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 export {
   CLI_FRESH_WATCHDOG_DEFAULTS,
   CLI_RESUME_WATCHDOG_DEFAULTS,

@@ -152,6 +152,41 @@ describe("CLI compatibility at the execution boundary", () => {
   );
 
   it.each(["process", "plugin"] as const)(
+    "passes an explicitly selected unknown model to the %s runtime without claiming compatibility",
+    async (kind) => {
+      const { context, plugin } = contextFor(kind);
+      context.preparedBackend.backend.modelArg = "--model";
+      context.backendResolved.prepareModelCatalog = async () => ({
+        models: {
+          [modelId]: { available: false, compatibility: "unknown" as const },
+        },
+        runtimeVersion: "2.1.286",
+      });
+      supervisorSpawnMock.mockImplementation(async () =>
+        createManagedRun({ ...createSuccessfulProcessExit(), stdout: "2.1.286" }),
+      );
+      await expect(executePreparedCliRun(context)).resolves.toMatchObject({ text: "2.1.286" });
+      if (kind === "plugin") {
+        expect(plugin).toHaveBeenCalledWith(
+          expect.objectContaining({ modelId, args: expect.arrayContaining(["--model", modelId]) }),
+        );
+      } else {
+        expect(supervisorSpawnMock).toHaveBeenCalledWith(
+          expect.objectContaining({ argv: expect.arrayContaining(["--model", modelId]) }),
+        );
+      }
+    },
+  );
+
+  it("does not treat a missing compatibility result as explicit passthrough", async () => {
+    const { context, plugin } = contextFor("plugin");
+    context.backendResolved.prepareModelCatalog = async () => ({ models: {} });
+    await expect(executePreparedCliRun(context)).rejects.toThrow("has not verified compatibility");
+    expect(plugin).not.toHaveBeenCalled();
+    expect(supervisorSpawnMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["process", "plugin"] as const)(
     "prepares the verified runtime version before the %s launch",
     async (kind) => {
       const { context } = contextFor(kind);

@@ -157,7 +157,13 @@ export function projectSessionModelCatalog(
   if (readParams.sessionEntry?.execHost === "node") {
     // Gateway-local login and installation facts cannot establish node readiness.
     const omitLocalReadiness = <
-      T extends { available?: boolean; unavailableReason?: string; unavailableUntil?: number },
+      T extends {
+        available?: boolean;
+        unavailableReason?: string;
+        unavailableUntil?: number;
+        runtimeCompatibilityReason?: string;
+        runtimeCompatibilityNextCheckAt?: number;
+      },
     >(
       choice: T,
     ) => {
@@ -165,6 +171,8 @@ export function projectSessionModelCatalog(
         available: _available,
         unavailableReason: _reason,
         unavailableUntil: _until,
+        runtimeCompatibilityReason: _compatibilityReason,
+        runtimeCompatibilityNextCheckAt: _compatibilityNextCheck,
         ...remote
       } = choice;
       return remote;
@@ -202,6 +210,8 @@ export function projectSessionModelCatalog(
       available: _available,
       unavailableReason: _reason,
       unavailableUntil: _until,
+      runtimeCompatibilityReason: _compatibilityReason,
+      runtimeCompatibilityNextCheckAt: _compatibilityNextCheck,
       ...native
     } = model;
     return native;

@@ -75,6 +75,10 @@ const ModelRuntimeProperties = {
   unavailableReason: Type.Optional(ModelUnavailableReasonSchema),
   /** Earliest known retry time in epoch milliseconds, only for unavailable models. */
   unavailableUntil: Type.Optional(Type.Integer({ minimum: 0 })),
+  /** Gateway-local CLI recovery guidance, independent of authentication and paired-node readiness. */
+  runtimeCompatibilityReason: Type.Optional(NonEmptyString),
+  /** Next request-driven automatic check in epoch milliseconds; a manual refresh can retry sooner. */
+  runtimeCompatibilityNextCheckAt: Type.Optional(Type.Integer({ minimum: 0 })),
   contextWindow: Type.Optional(Type.Integer({ minimum: 1 })),
   contextTokens: Type.Optional(Type.Integer({ minimum: 1 })),
   local: Type.Optional(Type.Boolean()),

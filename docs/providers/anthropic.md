@@ -143,7 +143,8 @@ OpenClaw release:
         Pinned binaries, custom wrappers, Desktop-managed installs, Windows,
         and unrecognized package managers require an update through their owner.
         If the selected channel remains too old, the model stays unavailable.
-        Models with unknown CLI requirements are not advertised as verified.
+        Explicitly configured models with unknown CLI requirements can still be
+        sent to Claude CLI, but are not advertised as verified.
         Direct API routes remain independent. Paired-node installations belong
         to the node; Gateway-local repair does not update them.
       </Step>

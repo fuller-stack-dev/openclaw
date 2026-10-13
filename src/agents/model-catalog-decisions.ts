@@ -158,6 +158,8 @@ export type ModelCatalogDecisionParams = {
   profileProvider?: string;
   runtimeOverride?: string;
   accountCatalog?: import("./prepared-model-runtime-auth.js").PreparedAccountCatalogAccess;
+  /** Explicit model selection may defer unknown CLI requirements to execution without bypassing auth. */
+  cliCompatibilityPurpose?: "selection";
   routeResolverFactory?: typeof createOpenAIModelRoutesResolver;
   isCurrent?: () => boolean;
 };
@@ -297,12 +299,18 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
       return evaluation;
     }
     const compatibility = snapshot.cliRuntimeCompatibility?.[runtime];
+    const modelCompatibility = compatibility?.models[entry.id];
     const needsPreparation =
       compatibility !== undefined ||
       params.pluginRegistry?.cliBackends.some(
         ({ backend }) => backend.id === runtime && backend.prepareModelCatalog !== undefined,
       );
-    if (!needsPreparation || compatibility?.models[entry.id]?.available === true) {
+    if (
+      !needsPreparation ||
+      modelCompatibility?.available === true ||
+      (params.cliCompatibilityPurpose === "selection" &&
+        modelCompatibility?.compatibility === "unknown")
+    ) {
       return evaluation;
     }
     return {
@@ -310,8 +318,11 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
       availability: false,
       availabilityAuthoritative: true,
       runtimeCompatibilityReason:
-        compatibility?.models[entry.id]?.reason ??
+        modelCompatibility?.reason ??
         "CLI compatibility has not been verified. Refresh Models to retry.",
+      ...(compatibility?.nextCheckAt !== undefined
+        ? { runtimeCompatibilityNextCheckAt: compatibility.nextCheckAt }
+        : {}),
     };
   };
   // Store revisions do not advance when a token or failure window expires.

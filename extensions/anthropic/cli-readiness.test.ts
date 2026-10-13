@@ -23,7 +23,7 @@ const temps = useAutoCleanupTempDirTracker((cleanup) =>
 );
 const model = "claude-opus-5-5";
 
-async function fixture() {
+async function fixture(signal = new AbortController().signal) {
   const installation = await createClaudeInstallationFixture(temps.make("claude-readiness-"));
   const api = createTestPluginApi();
   Object.assign(api.runtime, {
@@ -39,7 +39,7 @@ async function fixture() {
   const context: CliBackendModelCatalogContext = {
     ...installation.context,
     cwd: installation.home,
-    signal: new AbortController().signal,
+    signal,
     modelIds: [model],
     reason: "discovery",
     withMaintenance: (update) => update(),
@@ -55,27 +55,71 @@ async function fixture() {
 
 // These executable fixtures cover the supported macOS/Linux automatic update path.
 describe.skipIf(process.platform === "win32")("Claude CLI readiness", () => {
-  it("repairs discovery once for concurrent consumers and serves repeat reads without CLI work", async () => {
-    const f = await fixture();
+  it("cancels a waiting caller without interrupting shared repair or repeating CLI work", async ({
+    signal,
+  }) => {
+    const lifetime = new AbortController();
+    const f = await fixture(AbortSignal.any([signal, lifetime.signal]));
     const prepare = f.create();
-    const results = await Promise.all([prepare(f.context), prepare(f.context)]);
-    for (const result of results) {
-      expect(result.models[model]).toEqual({ available: true });
-      expect(result.runtimeVersion).toBe("2.1.286");
-    }
-    expect(await f.updates()).toHaveLength(1);
-    expect(f.invalidate).toHaveBeenCalledOnce();
-    const invocations = (await f.calls()).length;
-    expect((await prepare({ ...f.context, reason: "routine" })).models[model]?.available).toBe(
-      true,
-    );
-    expect((await f.calls()).length).toBe(invocations);
-    const unknown = await prepare({ ...f.context, modelIds: ["claude-future-99"] });
-    expect(unknown.models["claude-future-99"]).toMatchObject({
-      available: false,
-      reason: expect.stringContaining("not known"),
+    const completed = createDeferred<void>();
+    const release = createDeferred<void>();
+    const owner = prepare({
+      ...f.context,
+      withMaintenance: async (update) => {
+        const result = await update();
+        completed.resolve();
+        await release.promise;
+        return result;
+      },
     });
-    expect(await f.updates()).toHaveLength(1);
+    const controller = new AbortController();
+    const waiters: ReturnType<typeof prepare>[] = [];
+    try {
+      await withinTest(
+        awaitGateBeforeSettlement(completed.promise, owner, "Repair did not reach settlement"),
+        signal,
+      );
+      const cancelled = prepare({ ...f.context, signal: controller.signal });
+      const survivor = prepare(f.context);
+      waiters.push(cancelled, survivor);
+      let waiterSettled = false;
+      const failure = cancelled
+        .catch((error: unknown) => error)
+        .finally(() => {
+          waiterSettled = true;
+        });
+      controller.abort(new Error("Waiting turn cancelled"));
+      // Abort rejection is local: drain promise reactions before releasing the owner.
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(waiterSettled).toBe(true);
+      expect(await failure).toMatchObject({ name: "AbortError" });
+      expect(f.context.signal.aborted).toBe(false);
+      release.resolve();
+      for (const result of await Promise.all([owner, survivor])) {
+        expect(result.models[model]).toEqual({ available: true });
+        expect(result.runtimeVersion).toBe("2.1.286");
+      }
+      expect(await f.updates()).toHaveLength(1);
+      expect(f.invalidate).toHaveBeenCalledOnce();
+      const invocations = (await f.calls()).length;
+      expect((await prepare({ ...f.context, reason: "routine" })).models[model]?.available).toBe(
+        true,
+      );
+      expect((await f.calls()).length).toBe(invocations);
+      const unknown = await prepare({ ...f.context, modelIds: ["claude-future-99"] });
+      expect(unknown.models["claude-future-99"]).toMatchObject({
+        available: false,
+        compatibility: "unknown",
+        reason: expect.stringContaining("not known"),
+      });
+      expect(await f.updates()).toHaveLength(1);
+    } finally {
+      lifetime.abort(new Error("Readiness test finished"));
+      release.resolve();
+      await Promise.allSettled([owner, ...waiters]);
+    }
   });
 
   it("keeps failed attempts across owner restart and lets an explicit manual refresh repair them", async () => {
@@ -102,7 +146,8 @@ describe.skipIf(process.platform === "win32")("Claude CLI readiness", () => {
   ])(
     "honors pending manual refreshes after automatic readiness=$automaticReady, manual readiness=$manualReady",
     async ({ automaticReady, manualReady }, { signal }) => {
-      const f = await fixture();
+      const lifetime = new AbortController();
+      const f = await fixture(AbortSignal.any([signal, lifetime.signal]));
       await f.change({ fail: !automaticReady });
       const prepare = f.create();
       const completed = createDeferred<void>();
@@ -153,6 +198,7 @@ describe.skipIf(process.platform === "win32")("Claude CLI readiness", () => {
           expect((await f.calls()).length).toBe(invocations);
         }
       } finally {
+        lifetime.abort(new Error("Readiness test finished"));
         release.resolve();
         await Promise.allSettled([automatic, ...waiters]);
       }
@@ -199,6 +245,7 @@ describe.skipIf(process.platform === "win32")("Claude CLI readiness", () => {
       available: false,
       reason: expect.stringContaining("requires 2.1.280"),
     });
+    expect(result.models[ids[3]!]).not.toHaveProperty("compatibility");
     expect(result.models[ids[4]!]).toMatchObject({
       available: false,
       reason: expect.stringContaining("not known"),
@@ -225,13 +272,19 @@ describe.skipIf(process.platform === "win32")("Claude CLI readiness", () => {
     expect(await f.updates()).toHaveLength(2);
   });
 
-  it("assesses a newly discovered requirement immediately after an older model was ready", async () => {
+  it("preserves unknown configured IDs without verifying them or bypassing a newly discovered requirement", async () => {
     const f = await fixture();
     const prepare = f.create();
-    expect(
-      (await prepare({ ...f.context, modelIds: ["claude-opus-5"] })).models["claude-opus-5"]
-        ?.available,
-    ).toBe(true);
+    const result = await prepare({
+      ...f.context,
+      modelIds: ["claude-opus-5", "claude-future-99"],
+    });
+    expect(result.models["claude-opus-5"]?.available).toBe(true);
+    expect(result.models["claude-future-99"]).toMatchObject({
+      available: false,
+      compatibility: "unknown",
+    });
+    expect(result.runtimeVersion).toBe("2.1.269");
     expect(await f.updates()).toHaveLength(0);
     expect((await prepare(f.context)).models[model]?.available).toBe(true);
     expect(await f.updates()).toHaveLength(1);

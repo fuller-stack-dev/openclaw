@@ -108,26 +108,6 @@ afterEach(() => {
 });
 
 describe("Claude version discovery", () => {
-  it("reprobes after maintenance without letting an old in-flight result restore stale capabilities", async () => {
-    const old = createDeferred<CommandResult>();
-    const runner = vi
-      .fn<CommandRunner>()
-      .mockReturnValueOnce(old.promise)
-      .mockResolvedValue(versionResult("2.1.286 (Claude Code)"));
-    const api = createTestPluginApi();
-    Object.assign(api.runtime, { system: { runCommandWithTimeout: runner } });
-    const probe = createClaudeCodeVersionProbe(api);
-    const beforeUpdate = probe.resolveVersion();
-    await Promise.resolve();
-    probe.invalidateVersion();
-    expect(await probe.resolveVersion()).toBe("2.1.286");
-    old.resolve(versionResult("2.0.1 (Claude Code)"));
-    expect(await beforeUpdate).toBe("2.1.286");
-    expect(await probe.resolveVersion()).toBe("2.1.286");
-    expect(probe.supportsDynamicSystemPromptSections()).toBe(true);
-    expect(runner).toHaveBeenCalledTimes(2);
-  });
-
   it.each(["failure", "missing", "output-limit", "prerelease"] as const)(
     "leaves the transport floor intact after %s",
     async (mode) => {
@@ -259,4 +239,24 @@ it("recognizes environment OAuth credentials while an explicit API key wins", as
   });
   await wrapper?.(model, context);
   expect(request.base.mock.calls[1]?.[2]?.headers?.["user-agent"]).toBe("claude-cli/2.1.400");
+});
+
+it("reprobes after maintenance without letting an old in-flight result restore stale capabilities", async () => {
+  const old = createDeferred<CommandResult>();
+  const runner = vi
+    .fn<CommandRunner>()
+    .mockReturnValueOnce(old.promise)
+    .mockResolvedValue(versionResult("2.1.286 (Claude Code)"));
+  const api = createTestPluginApi();
+  Object.assign(api.runtime, { system: { runCommandWithTimeout: runner } });
+  const probe = createClaudeCodeVersionProbe(api);
+  const beforeUpdate = probe.resolveVersion();
+  await Promise.resolve();
+  probe.invalidateVersion();
+  expect(await probe.resolveVersion()).toBe("2.1.286");
+  old.resolve(versionResult("2.0.1 (Claude Code)"));
+  expect(await beforeUpdate).toBe("2.1.286");
+  expect(await probe.resolveVersion()).toBe("2.1.286");
+  expect(probe.supportsDynamicSystemPromptSections()).toBe(true);
+  expect(runner).toHaveBeenCalledTimes(2);
 });

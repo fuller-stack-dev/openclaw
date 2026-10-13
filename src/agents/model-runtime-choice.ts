@@ -124,6 +124,7 @@ export async function prepareModelChoice(params: {
           const key = modelKey(ref.provider, ref.model);
           const decide = async (snapshot: typeof owner.modelCatalog) => {
             const decisions = createModelCatalogDecisions({
+              cliCompatibilityPurpose: "selection",
               cfg: owner.config,
               agentId: params.agentId,
               agentDir: owner.agentDir,
@@ -329,6 +330,7 @@ export async function preparePublishedModelRuntimeChoice(params: {
     return { kind: "unavailable", message: unavailable };
   }
   const decisions = createModelCatalogDecisions({
+    cliCompatibilityPurpose: "selection",
     cfg: owner.config,
     agentId: owner.agentId ?? params.agentId,
     agentDir: owner.agentDir,

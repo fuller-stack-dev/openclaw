@@ -73,6 +73,7 @@ import {
 import type { ModelsListCatalogSource } from "./models-list-context.js";
 import {
   buildPublicModelProjection,
+  projectCliRuntimeCompatibility,
   projectProviderCatalogOutcomes,
 } from "./models-list-public-projection.js";
 import { prepareModelPickerRuntimeChoices } from "./models-list-runtime-choices.js";
@@ -235,6 +236,7 @@ function createPublicModelsListProjector(params: {
       supportsFastMode === undefined ? {} : { supportsFastMode },
       serviceTiers === undefined ? {} : { serviceTiers },
       projectedAvailability === undefined ? {} : { available: projectedAvailability },
+      projectCliRuntimeCompatibility(evaluation),
       projectedAvailability === false && evaluation.unavailableReason
         ? {
             unavailableReason: evaluation.unavailableReason,

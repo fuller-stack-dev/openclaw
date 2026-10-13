@@ -31,6 +31,14 @@ function toCliModelRow(model: ModelChoice): ModelRow {
     ...(model.contextTokens !== undefined ? { contextTokens: model.contextTokens } : {}),
     local: model.local ?? null,
     available: model.available ?? null,
+    ...(model.runtimeCompatibilityReason
+      ? {
+          runtimeCompatibilityReason: model.runtimeCompatibilityReason,
+          ...(model.runtimeCompatibilityNextCheckAt !== undefined
+            ? { runtimeCompatibilityNextCheckAt: model.runtimeCompatibilityNextCheckAt }
+            : {}),
+        }
+      : {}),
     tags: [...new Set([...(model.tags ?? []), ...(model.alias ? [`alias:${model.alias}`] : [])])],
   };
 }

@@ -119,6 +119,32 @@ async function list(options: Parameters<typeof modelsListCommand>[0]) {
 }
 
 describe("models list published transport", () => {
+  it("preserves CLI recovery diagnostics in JSON without relabeling API authentication", async () => {
+    const diagnostics = {
+      runtimeCompatibilityReason: "CLI 1.0 needs 2.0; its configured installer is unowned.",
+      runtimeCompatibilityNextCheckAt: 2_000_000_000_000,
+    };
+    vi.mocked(gateway.callGateway).mockResolvedValue({
+      models: [model, { ...model, id: "blocked", available: false, ...diagnostics }],
+    });
+    await list({ json: true });
+    expect(runtime.writeJson).toHaveBeenCalledWith(
+      {
+        count: 2,
+        models: [
+          expect.not.objectContaining({ runtimeCompatibilityReason: expect.anything() }),
+          expect.objectContaining({
+            key: "catalog-provider/blocked",
+            available: false,
+            ...diagnostics,
+          }),
+        ],
+      },
+      2,
+    );
+    expect(runtime.error).not.toHaveBeenCalled();
+  });
+
   it("refreshes the selected Gateway's inventory without resolving local provider secrets", async () => {
     vi.mocked(configLoader.loadModelsConfigWithSource).mockRejectedValue(
       new Error("Local provider secret unavailable"),
@@ -345,6 +371,40 @@ describe("model list terminal table", () => {
     available: true,
     tags: [],
   });
+  it("prints sanitized CLI recovery guidance and request-driven retry timing", () => {
+    printModelTable(
+      [
+        {
+          ...makeRow("fixture/new-model"),
+          available: false,
+          runtimeCompatibilityReason:
+            "CLI \u001b[31m1.0\u001b[0m needs 2.0.\nUpdate its installer.",
+          runtimeCompatibilityNextCheckAt: 2_000_000_000_000,
+        },
+      ],
+      runtime,
+    );
+    expect(runtime.log.mock.calls.at(-1)?.[0]).toBe(
+      "  CLI compatibility: CLI 1.0 needs 2.0.\\nUpdate its installer. Automatic checks can retry after 2033-05-18T03:33:20.000Z. Retry now: openclaw models list --refresh.",
+    );
+  });
+
+  it("keeps plain output limited to keys when CLI compatibility has failed", () => {
+    printModelTable(
+      [
+        {
+          ...makeRow("fixture/new-model"),
+          available: false,
+          runtimeCompatibilityReason: "CLI needs an update.",
+        },
+      ],
+      runtime,
+      { plain: true },
+    );
+    expect(runtime.writeStdout).toHaveBeenCalledExactlyOnceWith("fixture/new-model");
+    expect(runtime.log).not.toHaveBeenCalled();
+  });
+
   it("prints context caps with sanitized tags in their original order", () => {
     const tags = [
       "\u001b[31mdefault\u001b[0m",

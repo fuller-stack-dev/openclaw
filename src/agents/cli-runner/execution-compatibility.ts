@@ -56,7 +56,7 @@ export async function prepareCliExecutionCompatibility(params: {
     });
     assertCurrent();
     const readiness = compatibility.models[context.modelId];
-    if (!readiness?.available) {
+    if (!readiness?.available && readiness?.compatibility !== "unknown") {
       throw new Error(
         readiness?.reason ??
           `CLI backend ${context.backendResolved.id} has not verified compatibility with ${context.modelId}`,

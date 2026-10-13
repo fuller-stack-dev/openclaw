@@ -263,24 +263,6 @@ export function resolveCliBackendLiveTest(provider: string): ResolvedCliBackendL
   };
 }
 
-/** Execution and catalog maintenance share the registered plugin's launch configuration. */
-export function resolveCliBackendLaunchConfig(
-  backend: CliBackendPlugin,
-  cfg?: OpenClawConfig,
-  options: { agentId?: string } = {},
-): CliBackendConfig | null {
-  const context: CliBackendNormalizeConfigContext = {
-    backendId: normalizeProviderId(backend.id),
-    ...(options.agentId ? { agentId: options.agentId } : {}),
-    ...(cfg ? { config: cfg } : {}),
-  };
-  const config = backend.normalizeConfig
-    ? backend.normalizeConfig({ ...backend.config }, context)
-    : backend.config;
-  const command = config.command?.trim();
-  return command ? { ...config, command } : null;
-}
-
 /** Resolves the executable CLI backend registered by its owning plugin. */
 export function resolveCliBackendConfig(
   provider: string,
@@ -329,6 +311,24 @@ export function resolveCliBackendConfig(
     sideQuestionToolMode: backend.sideQuestionToolMode,
     runtimeArtifact: backend.runtimeArtifact,
   };
+}
+
+/** Execution and catalog maintenance share the registered plugin's launch configuration. */
+export function resolveCliBackendLaunchConfig(
+  backend: CliBackendPlugin,
+  cfg?: OpenClawConfig,
+  options: { agentId?: string } = {},
+): CliBackendConfig | null {
+  const context: CliBackendNormalizeConfigContext = {
+    backendId: normalizeProviderId(backend.id),
+    ...(options.agentId ? { agentId: options.agentId } : {}),
+    ...(cfg ? { config: cfg } : {}),
+  };
+  const config = backend.normalizeConfig
+    ? backend.normalizeConfig({ ...backend.config }, context)
+    : backend.config;
+  const command = config.command?.trim();
+  return command ? { ...config, command } : null;
 }
 
 /** Test-only dependency controls for CLI backend registry resolution. */
