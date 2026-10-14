@@ -119,11 +119,13 @@ export function normalizePendingFinalDelivery(
     return undefined;
   }
   const intentId = normalizeOptionalString(value.intentId);
+  const sourceRunId = normalizeOptionalString(value.sourceRunId);
   const deliveries = normalizePendingFinalDeliveries(value.deliveries);
   const base = {
     createdAt,
     ...(isRecord(value.context) ? { context: value.context } : {}),
     ...(intentId ? { intentId } : {}),
+    ...(sourceRunId ? { sourceRunId } : {}),
     ...(deliveries ? { deliveries } : {}),
   };
   if (value.kind === "transport-only") {

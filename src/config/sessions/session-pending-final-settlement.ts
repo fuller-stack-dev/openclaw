@@ -21,12 +21,12 @@ export type PendingFinalDeliverySettlementInput = {
   };
 };
 
-/** Harness evidence reaches this reducer only after the host validates its live claim. */
+/** Harness claims are host-validated; ordinary sources belong to the persisted final intent. */
 export function projectPendingFinalDeliverySettlement(
   entry: InternalSessionEntry,
   input: PendingFinalDeliverySettlementInput,
   evidence?: {
-    claim: HarnessCompletionRecovery;
+    claim?: HarnessCompletionRecovery;
     result?: { channel: string; target?: { id: string }; platformMessageId?: string };
   },
 ): {
@@ -100,9 +100,12 @@ function projectPendingFinalDeliveryState(
   const result = evidence?.result;
   const platformMessageId = result?.platformMessageId;
   const context = pending.context;
-  // The exact claim receipt commits with delivery completion before queue acknowledgment.
+  const sourceRunId = pending.sourceRunId ?? evidence?.claim?.sourceRunId;
+  // Commit the original source receipt before queue ACK, even if run cleanup
+  // already retired its active claim. Never borrow the current requester source.
   const terminalEvidence =
-    evidence &&
+    sourceRunId &&
+    (!evidence?.claim || evidence.claim.sourceRunId === sourceRunId) &&
     result &&
     platformMessageId &&
     result.channel === context?.channel &&
@@ -114,8 +117,8 @@ function projectPendingFinalDeliveryState(
           entry.restartRecoveryTerminalDeliveryEvidence,
           [
             {
-              runId: evidence.claim.sourceRunId,
-              harnessCompletion: evidence.claim,
+              runId: sourceRunId,
+              ...(evidence?.claim ? { harnessCompletion: evidence.claim } : {}),
               deliveryContext: context,
               captured: true,
               payloads: [{ visible: true }],

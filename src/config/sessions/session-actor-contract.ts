@@ -106,7 +106,7 @@ export type SessionActorPendingFinalDelivery = NonNullable<SessionEntry["pending
 
 /** Already validated by the host; live authority is checked again at commit. */
 export type SessionActorDeliveryEvidence = {
-  claim: HarnessCompletionRecovery;
+  claim?: HarnessCompletionRecovery;
   result?: { channel: string; target?: { id: string }; platformMessageId?: string };
 };
 

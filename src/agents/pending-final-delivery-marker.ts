@@ -13,6 +13,7 @@ import {
   normalizePendingFinalRecoveryPayloads,
 } from "../auto-reply/reply/pending-final-delivery.js";
 import {
+  getRestartRecoveryPendingFinalSourceRunId,
   getRestartRecoveryTerminalDeliveryEvidence,
   mergeRestartRecoveryTerminalDeliveryEvidence,
 } from "../config/sessions/restart-recovery-state.js";
@@ -105,6 +106,14 @@ export async function persistPendingFinalDeliveryMarker(
       ) {
         return { result: current };
       }
+      // Bind a normal requester final only while the same original source and route
+      // still own it. A later turn or changed channel cannot acknowledge this source.
+      const sourceRunId =
+        harnessCompletion?.sourceRunId ??
+        (current.restartRecoveryDeliveryRunId === entry.restartRecoveryDeliveryRunId &&
+        current.restartRecoveryDeliverySourceRunId === entry.restartRecoveryDeliverySourceRunId
+          ? getRestartRecoveryPendingFinalSourceRunId(current, params.deliveryContext)
+          : undefined);
       const savedEvidence = harnessCompletion
         ? getRestartRecoveryTerminalDeliveryEvidence(current, harnessCompletion.sourceRunId)
         : undefined;
@@ -115,6 +124,7 @@ export async function persistPendingFinalDeliveryMarker(
             ? { kind: "replayable" as const, text: recoverableText }
             : { kind: "transport-only" as const }),
           intentId,
+          ...(sourceRunId ? { sourceRunId } : {}),
           deliveries: [{ id: deliveryId, state: "prepared" as const }],
           createdAt: now,
           context: params.deliveryContext,

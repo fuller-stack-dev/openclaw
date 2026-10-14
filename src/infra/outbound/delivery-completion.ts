@@ -201,18 +201,20 @@ export async function settlePendingFinalDelivery(
         authority.expectedWriterRunId === entry.activeWriterRunId) &&
       getOwedHarnessCompletionTask(claim, previous),
     );
-  const evidence = claim
-    ? {
-        claim,
-        result: options.identifiedResult
-          ? {
-              channel: options.identifiedResult.channel,
-              target: options.identifiedResult.target,
-              platformMessageId: readPlatformMessageId(options.identifiedResult),
-            }
-          : undefined,
-      }
-    : undefined;
+  const evidence =
+    claim || options.identifiedResult
+      ? {
+          ...(claim ? { claim } : {}),
+          result:
+            options.identifiedResult && options.identifiedResult.outcome !== "not_sent"
+              ? {
+                  channel: options.identifiedResult.channel,
+                  target: options.identifiedResult.target,
+                  platformMessageId: readPlatformMessageId(options.identifiedResult),
+                }
+              : undefined,
+        }
+      : undefined;
   const live: SessionActorAuthority = {
     assertCurrent() {},
     authorize(stage, facts) {
