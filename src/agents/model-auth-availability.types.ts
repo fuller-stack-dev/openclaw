@@ -3,6 +3,7 @@ import type {
   ProviderModelRouteResolution,
   ProviderModelRouteSource,
 } from "../plugin-sdk/provider-model-types.js";
+import type { SelectedModelCredential } from "./model-auth-selected-credential.js";
 import type { ProviderModelAuthEvidence } from "./provider-model-auth-source-plan.js";
 
 export type ModelAuthAvailability = boolean | undefined;
@@ -38,6 +39,7 @@ export type ModelAuthAvailabilityEvaluation = {
   selectedRoute?: ProviderModelRouteCandidate;
   selectedProfileId?: string;
   selectedAuthMode?: string;
+  selectedCredential?: SelectedModelCredential;
   evidence?: ModelAuthAvailabilityEvidence;
   runtimeAuth?: { id: string; source: "native" };
 };
@@ -56,5 +58,4 @@ export type ModelAuthAvailabilityResolver = {
     provider: string,
     ref?: ModelAuthAvailabilityRef,
   ): ModelAuthAvailability;
-  hasSyntheticAuth(provider: string): boolean;
 };

@@ -4,7 +4,7 @@ import { resolveStateDir } from "../../config/paths.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { acquireGatewayLock } from "../../infra/gateway-lock.js";
 import { hasActiveGatewayStateOwner } from "../../infra/gateway-state-owner.js";
-import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
+import type { PackageUpdateTransaction } from "../../infra/package-update-swap-contract.js";
 import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import { createSqliteLifecycleAggregateError } from "../../infra/sqlite-lifecycle-errors.js";
 import {
@@ -16,7 +16,10 @@ import { reportUpdateStepCompletion } from "../../infra/update-runner-command.js
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateStepResult } from "../../infra/update-step-result.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
-import { prepareOpenClawStateDatabaseRemoval } from "../../state/openclaw-state-db-cache.js";
+import {
+  closeOpenClawStateDatabaseByPathAsync,
+  prepareOpenClawStateDatabaseRemoval,
+} from "../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { MutableUpdateExecutionParams } from "./update-command-execution.types.js";
 import {
@@ -62,26 +65,30 @@ export async function captureUpdateDatabases(params: {
   try {
     const capture = async () => {
       params.assertCurrent();
-      if (maintenance && process.platform === "win32") {
-        try {
-          // Rollback closes this Windows probe before replacing files. Settle its
-          // checkpoint now so a retained progress reader's WAL is not later drift.
-          const exclusion = await prepareOpenClawStateDatabaseRemoval(
-            resolveOpenClawStateSqlitePath(env),
-            params.assertCurrent,
-          );
-          exclusion.release();
-        } catch (error) {
-          // A busy native probe still permits a snapshot for manual recovery;
-          // drainage and cleanup uncertainty must retain their failure.
-          if (
-            !(error instanceof Error) ||
-            error instanceof AggregateError ||
-            !isSqliteLockError(error.cause)
-          ) {
-            throw error;
+      if (maintenance) {
+        // Settle the writer checkpoint before capture, while leaving POSIX
+        // snapshot workers free to read the source database.
+        if (process.platform === "win32") {
+          try {
+            const exclusion = await prepareOpenClawStateDatabaseRemoval(
+              resolveOpenClawStateSqlitePath(env),
+              params.assertCurrent,
+            );
+            exclusion.release();
+          } catch (error) {
+            // A busy native probe still permits a snapshot for manual recovery;
+            // drainage and cleanup uncertainty must retain their failure.
+            if (
+              !(error instanceof Error) ||
+              error instanceof AggregateError ||
+              !isSqliteLockError(error.cause)
+            ) {
+              throw error;
+            }
+            unavailable = "another SQLite connection is active";
           }
-          unavailable = "another SQLite connection is active";
+        } else {
+          await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(env));
         }
         params.assertCurrent();
         maintenance.assertCurrent();
@@ -135,8 +142,9 @@ export async function captureUpdateDatabases(params: {
     unavailable === undefined &&
     backup.databases.every((entry) => typeof backup.sourceGenerations[entry.path] === "string");
   if (!restorable) {
+    transaction.databaseBackupRoot = undefined;
     backup.warnings.push(
-      `Automatic database restoration is disabled because ${unavailable ? `the Gateway could not be confirmed stopped during capture: ${unavailable}` : "a source database changed or its write generation could not be captured"}. Snapshots remain available at ${backup.directory}; later writes must be preserved.`,
+      `Automatic database restoration is disabled because ${unavailable ? `the Gateway could not be confirmed stopped during capture: ${unavailable}` : "a source database changed or its write generation could not be captured"}. Snapshots remain available at ${backup.directory} even after successful activation; later writes must be preserved.`,
     );
   }
   const step: UpdateStepResult = {
@@ -146,7 +154,7 @@ export async function captureUpdateDatabases(params: {
     durationMs: Date.now() - startedAt,
     exitCode: 0,
     diagnostics: [
-      `Databases snapshotted at ${backup.directory}. Verified successful activation removes these snapshots; otherwise retain them with the update's recovery artifacts.`,
+      `Databases snapshotted at ${backup.directory}. ${restorable ? "Verified successful activation removes these snapshots; otherwise retain them with the update's recovery artifacts." : "These snapshots require manual recovery and remain available after successful activation."}`,
       ...backup.databases.map(
         (entry) =>
           `${entry.path} -> ${entry.snapshotPath}; schema ${entry.userVersion}; ${entry.sizeBytes} bytes; SHA-256 ${entry.sha256}`,

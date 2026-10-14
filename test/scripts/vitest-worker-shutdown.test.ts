@@ -91,12 +91,9 @@ it
   "$route wrapper joins $phase work before honoring $shutdownSignal",
   ({ route, phase, shutdownSignal }, { workerArtifacts, signal, onTestFinished }) =>
     workerArtifacts.fixtureLifetime.run(async () => {
+      // Canceling the sole CI compiler still rejects disposal; settled signals retain their status.
       const expectedExitCode =
-        route.startsWith("ci") && phase !== "deletion"
-          ? 1
-          : shutdownSignal === "SIGINT"
-            ? 130
-            : 143;
+        route === "ci" && phase === "compilation" ? 1 : shutdownSignal === "SIGINT" ? 130 : 143;
       const root = workerArtifacts.fixtureDirectory();
       const input = writeFixture(root, "input", "owned verification input");
       const released = path.join(root, "release");
@@ -245,12 +242,13 @@ const waitForRelease=()=>new Promise(resolve=>{
   const poll=setInterval(check,50);
   check();
 });
-const readFile=fsp.readFile;
-fsp.readFile=async(filename,...args)=>{
+const readFile=fs.readFile;
+fs.readFile=(filename,...args)=>{
   if(filename===input && !held && (!ciRoot || phase!=='admission') && (phase==='admission' || (phase==='disposal' && borrowerClosed))) {
     held=true;
     publish('verification-ready',{owner:process.pid});
-    await waitForRelease();
+    void waitForRelease().then(()=>readFile(filename,...args));
+    return;
   }
   return readFile(filename,...args);
 };
@@ -514,9 +512,9 @@ it("rejects a live borrower when its owner closes during verification", ({
     const manifestFile = path.join(directory, "manifest.json");
     const started = createDeferred();
     const release = createDeferred();
-    const readFile = fs.promises.readFile.bind(fs.promises);
+    const readFile = fs.readFile.bind(fs);
     let held = false;
-    const reader = vi.spyOn(fs.promises, "readFile").mockImplementation(async (...args) => {
+    const reader = vi.spyOn(fs, "readFile").mockImplementation((...args) => {
       const filename = args[0];
       if (
         !held &&
@@ -528,7 +526,8 @@ it("rejects a live borrower when its owner closes during verification", ({
         if (Object.hasOwn(manifest.inputs, filename)) {
           held = true;
           started.resolve();
-          await release.promise;
+          void release.promise.then(() => readFile(...args));
+          return;
         }
       }
       return readFile(...args);

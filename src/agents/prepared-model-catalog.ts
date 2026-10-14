@@ -9,6 +9,7 @@ import {
 } from "./agent-scope.js";
 import { resolveLegacyInheritedAuthDir } from "./legacy-inherited-auth-dir.js";
 import { findModelInCatalog } from "./model-catalog-lookup.js";
+import { PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS } from "./model-catalog-timeouts.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { modelTransportRoutesMatch } from "./model-compat-catalog.js";
 import { resolvePublishedModelCatalogOwner } from "./prepared-model-catalog-owner.js";
@@ -25,7 +26,10 @@ import {
   getPreparedModelRuntimePluginGeneration,
 } from "./prepared-model-runtime-generation-scope.js";
 import { readCapturedPreparedModelRuntimeCatalog } from "./prepared-model-runtime.capture.js";
-import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model-runtime.errors.js";
+import {
+  isPreparedModelRuntimeMissingOwnerError,
+  PreparedModelRuntimePublicationSupersededError,
+} from "./prepared-model-runtime.errors.js";
 import { isPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalog.js";
 import {
   acquireAgentRunPreparedModelRuntime,
@@ -59,6 +63,8 @@ export type LoadPreparedModelCatalogParams = {
   refreshFullCatalog?: boolean;
   /** Request-bound authority for an explicit CLI compatibility retry. */
   cliCompatibilityRefresh?: { assertCurrent: () => void; signal?: AbortSignal };
+  /** Persist refreshed inventory only while the caller holds exclusive offline state custody. */
+  persistOfflineRefresh?: boolean;
   /** Scoped read-only loads may run live discovery for the scoped providers only. */
   scopedLiveProviderDiscovery?: boolean;
   allowGatewaySubagentBinding?: boolean;
@@ -73,6 +79,7 @@ type PreparedModelCatalogConfigPolicy = "exact" | "published";
 type PreparedModelCatalogOwner = {
   snapshot: PreparedModelRuntimeSnapshot;
   release?: () => void | Promise<void>;
+  refreshed?: boolean;
 };
 
 async function preparePublishedCatalogOwner(
@@ -273,7 +280,7 @@ async function resolveReadOnlyPublishedModelCatalogOwner(
         throw new PreparedModelCatalogConfigReplacedError(candidate.agentDir);
       }
     } catch (error) {
-      if (!(error instanceof PreparedModelRuntimeOwnerNotPublishedError)) {
+      if (!isPreparedModelRuntimeMissingOwnerError(error)) {
         throw error;
       }
     }
@@ -303,24 +310,33 @@ async function resolvePreparedModelCatalogOwnerSnapshotWithPolicy(
     }
     return { snapshot: lease.snapshot, release: () => lease[Symbol.asyncDispose]() };
   }
-  try {
-    const preparedExact = await preparePublishedOwner(exact);
-    if (acceptsPreparedSnapshotConfig(preparedExact.snapshot, exact, configPolicy)) {
-      return preparedExact;
-    }
-    await preparedExact.release?.();
-  } catch (error) {
-    if (!(error instanceof PreparedModelRuntimeOwnerNotPublishedError)) {
-      throw error;
+  const persistOfflineRefresh = params.persistOfflineRefresh && params.refreshFullCatalog;
+  if (!persistOfflineRefresh) {
+    try {
+      const preparedExact = await preparePublishedOwner(exact);
+      if (acceptsPreparedSnapshotConfig(preparedExact.snapshot, exact, configPolicy)) {
+        return preparedExact;
+      }
+      await preparedExact.release?.();
+    } catch (error) {
+      if (!isPreparedModelRuntimeMissingOwnerError(error)) {
+        throw error;
+      }
     }
   }
   // Direct commands own a persistent standalone generation. During gateway lifetime, writable
   // publication belongs exclusively to startup/reload or agent-run admission.
   const activated = await activateStandalonePreparedModelRuntime(activationExact, {
-    catalogMode: "static",
+    catalogMode: persistOfflineRefresh ? "live" : "static",
+    ...(persistOfflineRefresh
+      ? {
+          force: true,
+          providerDiscoveryTimeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
+        }
+      : {}),
   });
   if (activated && acceptsPreparedSnapshotConfig(activated, activationExact, configPolicy)) {
-    return { snapshot: activated };
+    return { snapshot: activated, refreshed: persistOfflineRefresh };
   }
   if (activated) {
     throw new PreparedModelRuntimeOwnerNotPublishedError(
@@ -353,7 +369,7 @@ async function withPreparedModelCatalogOwnerPolicy<T>(
   const publishedReadOnlyOwner = request.readOnly
     ? getPreparedModelCatalogOwnerSnapshot(request)
     : undefined;
-  const { snapshot, release } = await resolvePreparedModelCatalogOwnerSnapshotWithPolicy(
+  const { snapshot, release, refreshed } = await resolvePreparedModelCatalogOwnerSnapshotWithPolicy(
     request,
     configPolicy,
     preparePublishedOwner,
@@ -361,7 +377,7 @@ async function withPreparedModelCatalogOwnerPolicy<T>(
   try {
     // Only published owners expose generation caches; temporary reads use their prepared facts.
     const owner =
-      request.readOnly && !publishedReadOnlyOwner
+      refreshed || (request.readOnly && !publishedReadOnlyOwner)
         ? snapshot
         : await materializeRequestedModelCatalog(
             snapshot,
@@ -580,7 +596,11 @@ export async function loadPreparedModelCatalogSnapshot(
   if (readOnly && params.providerDiscoveryProviderIds) {
     return loadScopedReadOnlyModelCatalog({ ...params, readOnly });
   }
-  return (await loadPreparedModelCatalogOwnerSnapshot(params)).modelCatalog;
+  return await withPreparedModelCatalogOwnerPolicy(
+    params,
+    "exact",
+    async (owner) => (await owner.loadNativeModelCatalog?.()) ?? owner.modelCatalog,
+  );
 }
 
 export async function readPreparedModelCatalog(

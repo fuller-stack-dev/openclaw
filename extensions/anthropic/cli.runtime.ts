@@ -4,7 +4,6 @@ import { PassThrough } from "node:stream";
 import type {
   CliBackendExecuteContext,
   CliBackendLiveSessionCapability,
-  CliBackendLiveSessionCloseReason,
   CliBackendLiveSessionHandle,
   CliBackendToolPermissionResult,
 } from "openclaw/plugin-sdk/cli-backend";
@@ -17,12 +16,6 @@ import { createClaudeCliTransport } from "./cli-transport.js";
 import { createClaudeCliUserInputAuthorizer } from "./cli-user-input.js";
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1_000;
-// Claude Code emits interim results while these run, then delivers their answers
-// in later results under the same admitted turn.
-const RESULT_HOLDING_TASK_TYPES = new Set(["local_agent", "local_workflow"]);
-// Explicit background commands may never finish. Only Bash tasks that started
-// in the foreground and later entered the background list hold their turn.
-const TIMEOUT_BACKGROUNDED_TASK_TYPE = "local_bash";
 
 function readReplayedTaskId(
   message: Record<string, unknown>,
@@ -68,13 +61,15 @@ type ClaudeCliTurn = {
   foregroundTaskIds: Set<string>;
   foregroundBashToolUseIds: Set<string>;
   pendingBackgroundTaskIds: Set<string>;
+  subagentTaskIds: Set<string>;
   taskNotifications: Map<string, "queued" | "replayed">;
   error?: Error;
 };
 type ClaudeCliSession = {
   handle: CliBackendLiveSessionHandle;
   capability?: CliBackendLiveSessionCapability;
-  transport?: ReturnType<typeof createClaudeCliTransport>;
+  transport?: Awaited<ReturnType<typeof createClaudeCliTransport>>;
+  transportStartup?: ReturnType<typeof createClaudeCliTransport>;
   currentTurn?: ClaudeCliTurn;
   idleTimer?: ReturnType<typeof setTimeout>;
   hasInputLifecycle: boolean;
@@ -105,8 +100,7 @@ async function authorizeTool(
   signal: AbortSignal,
 ): Promise<CliBackendToolPermissionResult> {
   const turn = activeTurn(session);
-  const input = request.input;
-  const toolName = request.tool_name;
+  const { input, tool_name: toolName } = request;
   if (!turn || signal.aborted || typeof toolName !== "string" || !isRecord(input)) {
     return {
       behavior: "deny",
@@ -207,11 +201,7 @@ async function handleRequest(
   throw new Error("Unknown Claude CLI hook callback.");
 }
 
-function closeSession(
-  session: ClaudeCliSession,
-  _reason: CliBackendLiveSessionCloseReason,
-  error?: unknown,
-) {
+function closeSession(session: ClaudeCliSession, error?: unknown) {
   if (session.closed) {
     return;
   }
@@ -266,7 +256,11 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
     return;
   }
   if (message.type === "system" && message.subtype === "task_started") {
-    if (typeof message.task_id === "string" && message.task_id) {
+    if (message.owned_by_subagent === true) {
+      if (typeof message.task_id === "string" && message.task_id) {
+        turn.subagentTaskIds.add(message.task_id);
+      }
+    } else if (typeof message.task_id === "string" && message.task_id) {
       // task_type is optional here; the background task list names it later.
       if (message.is_backgrounded === false) {
         turn.foregroundTaskIds.add(message.task_id);
@@ -285,9 +279,9 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
         continue;
       }
       if (
-        (typeof task.task_type === "string" && RESULT_HOLDING_TASK_TYPES.has(task.task_type)) ||
-        (task.task_type === TIMEOUT_BACKGROUNDED_TASK_TYPE &&
-          turn.foregroundTaskIds.has(task.task_id))
+        task.task_type === "local_agent" ||
+        task.task_type === "local_workflow" ||
+        (task.task_type === "local_bash" && turn.foregroundTaskIds.has(task.task_id))
       ) {
         // Leaving the live task list is not acknowledgement of its queued answer.
         turn.pendingBackgroundTaskIds.add(task.task_id);
@@ -306,7 +300,9 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
     message.type === "system" &&
     message.subtype === "task_notification" &&
     typeof message.task_id === "string" &&
-    message.task_id
+    message.task_id &&
+    // Subagent completions have no parent result and must not consume its queue slots.
+    !turn.subagentTaskIds.delete(message.task_id)
   ) {
     // Include non-held tasks: each queued notification has its own ordered result.
     turn.taskNotifications.set(message.task_id, "queued");
@@ -372,8 +368,11 @@ function createSession(capability?: CliBackendLiveSessionCapability): ClaudeCliS
       generation: randomUUID(),
       fingerprint: capability?.fingerprint ?? randomUUID(),
       isIdle: () => !session.closed && !session.currentTurn,
-      close: (reason, error) => closeSession(session, reason, error),
-      waitForExit: () => session.transport?.waitForExit() ?? Promise.resolve(),
+      close: (_reason, error) => closeSession(session, error),
+      waitForExit: async () => {
+        const transport = session.transport ?? (await session.transportStartup);
+        await transport?.waitForExit();
+      },
     },
   };
   sessions.set(session.handle, session);
@@ -414,6 +413,7 @@ export async function* executeClaudeCli(
     foregroundTaskIds: new Set(),
     foregroundBashToolUseIds: new Set(),
     pendingBackgroundTaskIds: new Set(),
+    subagentTaskIds: new Set(),
     taskNotifications: new Map(),
   };
   session.currentTurn = turn;
@@ -423,15 +423,18 @@ export async function* executeClaudeCli(
     context.abortSignal?.throwIfAborted();
     // Adopt the process's exact MCP capture before prompt dispatch or native tool callbacks.
     capability?.activate(session.handle);
-    if (!session.transport) {
+    let transport = session.transport;
+    if (!transport) {
       const { args, excludeDynamicSections } = prepareClaudeCliTransportArgs(context);
-      session.transport = createClaudeCliTransport({
+      session.transportStartup = createClaudeCliTransport({
         context,
         args,
         secretInput,
         currentContext: () => session.currentTurn?.context,
         initialize: {
           appendSystemPrompt: context.systemPrompt,
+          // Native snapshots must not override the host's refreshed prompt on resume.
+          systemPromptSnapshot: false,
           excludeDynamicSections,
           hooks: {
             UserPromptSubmit: [{ hookCallbackIds: ["UserPromptSubmit"] }],
@@ -467,14 +470,24 @@ export async function* executeClaudeCli(
           };
         },
         onError: (error) => session.handle.close("abort", error),
+      }).then((created) => {
+        session.transport = created;
+        if (session.closed) {
+          created.close();
+        }
+        return created;
       });
-      await session.transport.initialize();
+      transport = await session.transportStartup;
+      if (session.closed) {
+        throw turn.error ?? new Error("Claude CLI closed during startup.");
+      }
+      await transport.initialize();
     }
     context.assertCurrent?.();
     if (session.closed || session.currentTurn !== turn) {
       throw turn.error ?? new Error("Claude CLI closed before its prompt was accepted.");
     }
-    await session.transport.send({
+    await transport.send({
       type: "user",
       message: { role: "user", content: context.prompt },
       parent_tool_use_id: null,
@@ -492,7 +505,7 @@ export async function* executeClaudeCli(
     }
   } catch (error) {
     session.handle.close("abort", error);
-    throw error;
+    throw turn.error ?? error;
   } finally {
     turn.controller.abort();
     context.abortSignal?.removeEventListener("abort", abort);

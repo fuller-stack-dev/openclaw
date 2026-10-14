@@ -2,15 +2,13 @@ import { Value } from "typebox/value";
 import { afterEach, expect, it } from "vitest";
 import { ModelsListResultSchema } from "../../../packages/gateway-protocol/src/schema/model-catalog.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
+import { createModelCatalogDecisions } from "../../agents/model-catalog-decisions.js";
 import { markPreparedModelCatalogFull } from "../../agents/prepared-model-runtime.full-catalog.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import {
-  buildModelsListResult,
-  createGatewayAgentModelCatalogProjector,
-} from "./models-list-result.js";
+import { buildModelsListResult } from "./models-list-result.js";
 import type { GatewayRequestContext } from "./types.js";
 
 afterEach(() => cliBackendsTesting.resetDepsForTest());
@@ -69,7 +67,7 @@ it.each([
               },
             }),
       });
-      const projector = createGatewayAgentModelCatalogProjector({
+      const projector = createModelCatalogDecisions({
         cfg: config,
         agentId: "main",
         agentDir: state.agentDir(),

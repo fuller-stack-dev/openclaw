@@ -9,6 +9,7 @@ import {
   LOCAL_INSTALLATION_TARGET_UNSUPPORTED,
 } from "../../infra/installation-target-context.js";
 import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
+import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { applySkillEnvOverridesFromSnapshot } from "../../skills/runtime/env-overrides.js";
 import {
   fingerprintCliRuntimeArtifact,
@@ -54,12 +55,9 @@ import {
 import { createCliRunCurrentAssertion } from "./execution-target.js";
 import {
   buildCliArgs,
-  enqueueCliRun,
   isClaudeCliBackendId,
   prepareCliPromptImagePayload,
-  resolveCliNoOutputTimeoutMs,
   resolveCliRunQueueKey,
-  resolveCliRunTimeoutOverrideMs,
   resolvePromptInput,
   resolveSessionIdToSend,
   resolveSystemPromptUsage,
@@ -67,6 +65,7 @@ import {
 import { cliBackendLog, CLI_BACKEND_LOG_OUTPUT_ENV } from "./log.js";
 import { createClaudeCliModelCallDiagnostics } from "./model-call-diagnostics.js";
 import { composeCliPromptContext } from "./prompt-context.js";
+import { resolveCliNoOutputTimeoutMs, resolveCliRunTimeoutOverrideMs } from "./reliability.js";
 import type { PreparedCliRunContext } from "./types.js";
 
 type ExecutePreparedCliRunOptions = {
@@ -82,18 +81,17 @@ export async function executePreparedCliRun(
   cliSessionIdToUse?: string,
   options?: ExecutePreparedCliRunOptions,
 ): Promise<CliOutput> {
-  // Fresh recovery retains its exact account/read authority across every await
-  // and through the process/plugin execution callbacks, not just preparation.
-  const context =
-    !cliSessionIdToUse && inputContext.openClawHistoryPrompt && inputContext.cliHistoryWriter
-      ? {
-          ...inputContext,
-          params: {
-            ...inputContext.params,
-            assertCurrent: inputContext.cliHistoryWriter.assertReadable,
-          },
-        }
-      : inputContext;
+  // Reuse the writer's run authority; each transport checks private history
+  // separately at its disclosure boundary.
+  const context = inputContext.cliHistoryWriter
+    ? {
+        ...inputContext,
+        params: {
+          ...inputContext.params,
+          assertCurrent: inputContext.cliHistoryWriter.assertCurrent,
+        },
+      }
+    : inputContext;
   const params = context.params as PreparedCliRunInternalParams;
   const assertCurrent = createCliRunCurrentAssertion(params);
   assertCurrent();
@@ -169,7 +167,7 @@ export async function executePreparedCliRun(
     ? params.userTurnTranscriptRecorder?.getAdmissionReceipt()?.entryId
     : undefined;
   const imagePayload = nodePlacement
-    ? { prompt, imagePaths: [] as string[], cleanupImages: async () => {} }
+    ? { prompt, imagePaths: [] as string[] }
     : await prepareCliPromptImagePayload({
         backend,
         prompt,
@@ -198,9 +196,7 @@ export async function executePreparedCliRun(
       : resolvedArgs;
 
   const cliLiveOwnerKey = buildCliLiveOwnerKey({
-    agentAccountId: params.agentAccountId,
     agentId: params.agentId,
-    authProfileId: context.effectiveAuthProfileId,
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
   });
@@ -256,27 +252,6 @@ export async function executePreparedCliRun(
       throw error;
     }
   };
-  const cleanupOuterResource = async (cleanup: (() => Promise<void>) | undefined) => {
-    try {
-      await runCliCleanup(params, "cli-outer-resource", async () => {
-        await cleanup?.();
-      });
-    } catch (error) {
-      if (completedOutput?.didSendViaMessagingTool) {
-        cliBackendLog.warn(
-          `CLI outer resource cleanup failed after confirmed message delivery: ${formatErrorMessage(error)}`,
-        );
-        return;
-      }
-      if (executionError !== undefined) {
-        cliBackendLog.warn(
-          `CLI outer resource cleanup also failed after run error: ${formatErrorMessage(error)}`,
-        );
-        return;
-      }
-      throw error;
-    }
-  };
   const executeAttempt = async (): Promise<CliOutput> => {
     assertCurrent();
     await context.preparedBackend.beforeExecution?.();
@@ -312,7 +287,7 @@ export async function executePreparedCliRun(
           provider: params.provider,
           model: context.normalizedModel,
           promptChars: basePrompt.length,
-          trigger: params.trigger,
+          trigger: params.isolatedCompletionPurpose ?? params.trigger,
           useResume,
           cliSessionId: cliSessionIdToUse,
           resolvedSessionId,
@@ -482,6 +457,7 @@ export async function executePreparedCliRun(
             params.cliToolAvailability && nodePlacement
               ? { native: params.cliToolAvailability.native, openClaw: [] }
               : params.cliToolAvailability,
+          hostOwnedTools: context.hostOwnedTools,
           useResume,
           baseArgs: baseArgsWithSkills,
         });
@@ -611,32 +587,36 @@ export async function executePreparedCliRun(
     });
   };
   try {
-    completedOutput = await enqueueCliRun(queueKey, () => {
-      const runQueuedAttempt = async () => {
-        assertCurrent();
-        if (params.lifecycleGeneration) {
-          assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
-        }
-        diagnostics?.emitStarted();
-        if (params.forkCliSessionOnResume && useResume) {
-          if (!params.persistCliSessionForkSuccessor) {
-            throw new Error("CLI session fork successor persistence is unavailable");
+    completedOutput = await enqueueCommandInLane(
+      `cli:${queueKey}`,
+      () => {
+        const runQueuedAttempt = async () => {
+          assertCurrent();
+          if (params.lifecycleGeneration) {
+            assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
           }
-          forkResumeClaimed = (await params.claimCliSessionFork?.()) === true;
-          if (!forkResumeClaimed) {
-            throw new Error("CLI session fork marker is no longer available");
+          diagnostics?.emitStarted();
+          if (params.forkCliSessionOnResume && useResume) {
+            if (!params.persistCliSessionForkSuccessor) {
+              throw new Error("CLI session fork successor persistence is unavailable");
+            }
+            forkResumeClaimed = (await params.claimCliSessionFork?.()) === true;
+            if (!forkResumeClaimed) {
+              throw new Error("CLI session fork marker is no longer available");
+            }
+            // The fork argument only applies at process startup; a cached warm child
+            // would run inside the source session. Force a fresh spawn.
+            await restartCliLiveSession(context);
           }
-          // The fork argument only applies at process startup; a cached warm child
-          // would run inside the source session. Force a fresh spawn.
-          await restartCliLiveSession(context);
-        }
-        return await executeAttempt();
-      };
-      // The retained consumer keeps every plugin call of this queued attempt, including
-      // a fork-on-resume live-session restart, admitted across a plugin hot reload.
-      const consumer = context.pluginExecutionConsumer;
-      return consumer ? consumer.run(runQueuedAttempt) : runQueuedAttempt();
-    });
+          return await executeAttempt();
+        };
+        // The retained consumer keeps every plugin call of this queued attempt, including
+        // a fork-on-resume live-session restart, admitted across a plugin hot reload.
+        const consumer = context.pluginExecutionConsumer;
+        return consumer ? consumer.run(runQueuedAttempt) : runQueuedAttempt();
+      },
+      { abortSignal: params.abortSignal },
+    );
     if (completedOutput.sessionId) {
       observeForkSuccessor(completedOutput.sessionId);
     }
@@ -665,10 +645,21 @@ export async function executePreparedCliRun(
     throw failure;
   } finally {
     try {
-      await cleanupOuterResource(systemPromptFile?.cleanup);
-      await cleanupOuterResource(imagePayload.cleanupImages);
+      await runCliCleanup(params, "cli-outer-resource", async () => {
+        await systemPromptFile?.cleanup();
+      });
     } catch (error) {
-      outerCleanupError = toErrorObject(error, "CLI outer resource cleanup failed");
+      if (completedOutput?.didSendViaMessagingTool) {
+        cliBackendLog.warn(
+          `CLI outer resource cleanup failed after confirmed message delivery: ${formatErrorMessage(error)}`,
+        );
+      } else if (executionError !== undefined) {
+        cliBackendLog.warn(
+          `CLI outer resource cleanup also failed after run error: ${formatErrorMessage(error)}`,
+        );
+      } else {
+        outerCleanupError = toErrorObject(error, "CLI outer resource cleanup failed");
+      }
     }
   }
   if (outerCleanupError) {

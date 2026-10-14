@@ -279,6 +279,38 @@ describe.skipIf(process.platform === "win32")(
       },
     );
 
+    it.each([
+      { permissions: 0o755, allowed: true },
+      { permissions: 0o777, allowed: false },
+    ])(
+      "checks intermediate launcher symlinks before maintenance, allowed=$allowed",
+      async ({ permissions, allowed }) => {
+        const f = await fixture("native");
+        const installation = await supported(f.context);
+        const directory = path.join(f.root, "launcher-relay");
+        const relay = path.join(directory, "claude");
+        await fs.mkdir(directory);
+        await fs.symlink(f.previous, relay);
+        await fs.unlink(f.launcher);
+        await fs.symlink(relay, f.launcher);
+        await fs.chmod(directory, permissions);
+        expect(await detectClaudeInstallation(f.context)).toMatchObject(
+          allowed ? { status: "supported" } : { status: "unsupported", reason: "unproven-owner" },
+        );
+        expect(await updateClaudeInstallation(f.context, installation)).toMatchObject(
+          allowed
+            ? { status: "updated", version: "2.1.286" }
+            : { status: "failed", reason: "owner-changed" },
+        );
+        if (allowed) {
+          expect((await f.calls()).filter(({ args }) => args[0] === "update")).toHaveLength(1);
+        } else {
+          expect(await f.calls()).toEqual([]);
+          expect(await fs.realpath(f.launcher)).toBe(f.previous);
+        }
+      },
+    );
+
     it.skipIf(process.platform !== "darwin" || !process.getgroups?.().includes(80))(
       "preserves Homebrew's standard macOS administrator-writable directory layout",
       async () => {

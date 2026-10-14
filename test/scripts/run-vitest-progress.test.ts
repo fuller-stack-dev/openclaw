@@ -16,6 +16,7 @@ import {
 import { isProcessAlive } from "../helpers/process-wait.js";
 import { awaitGateBeforeSettlement, createDeferred, withinTest } from "../helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { testRunnerFixtureEnv } from "./prepared-script-wrapper.test-support.js";
 import { createControlledWorkerCompiler } from "./vitest-worker-artifacts.test-support.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
@@ -95,7 +96,6 @@ posixDescribe.each([false, true])(
           path.join(root, `progress-${index}.test.ts`),
           `import fs from "node:fs";
 import { expect, it } from "vitest";
-import { waitForFile } from ${JSON.stringify(path.join(repoRoot, "test/helpers/process-wait.ts"))};
 ${fixtureReceiptClientSource(receipts.endpoint)}
 const index = ${index};
 it("real progress " + index, async () => {
@@ -103,7 +103,7 @@ it("real progress " + index, async () => {
   fs.writeFileSync(ready + ".tmp", String(process.pid));
   fs.renameSync(ready + ".tmp", ready);
   sendReceipt(ready, "ready");
-  await waitForFile(${JSON.stringify(root)} + "/release-" + index, 15000);
+  await awaitRelease(ready, "continue");
   expect(index).toBeLessThan(5);
 });
 `,
@@ -130,7 +130,7 @@ export default {
 };
 `,
       );
-      const env = { ...process.env };
+      const env = testRunnerFixtureEnv();
       for (const key of Object.keys(env)) {
         if (key.startsWith("VITEST") || key.startsWith("OPENCLAW_")) {
           delete env[key];
@@ -203,8 +203,8 @@ export default {
           workerPid = Number(fs.readFileSync(readyPath, "utf8"));
           clock.tick(600);
           expect(onNoOutputTimeout, output).not.toHaveBeenCalled();
-          fs.writeFileSync(path.join(root, `release-${index}`), "");
-          // File barriers never enter the watched pipes. Only Vitest's completed
+          receipts.release(readyPath, "continue");
+          // Release receipts never enter the watched pipes. Only Vitest's completed
           // case output can reset the watchdog before the next 600ms advance.
           await withinTest(
             awaitGateBeforeSettlement(
@@ -231,7 +231,7 @@ export default {
           clock.tick(1);
           expect(onNoOutputTimeout).toHaveBeenCalledOnce();
         } else {
-          fs.writeFileSync(path.join(root, "release-4"), "");
+          receipts.release(path.join(root, "ready-4"), "continue");
         }
         const result = await withinTest(watched.completion, signal);
         // Vitest's logger handles SIGTERM and exits with 128 + 15, rather than
@@ -261,6 +261,9 @@ export default {
           expect(diagnostic).toMatchObject({ reason: "passed", active: [] });
         }
       } finally {
+        for (let index = 0; index < 5; index++) {
+          receipts.release(path.join(root, `ready-${index}`), "continue");
+        }
         watched.teardown();
         forceKillVitestProcessGroup(watched.child);
         await watched.completion;
@@ -276,11 +279,10 @@ posixSerialDescribe("compiled subprocess preparation progress", { concurrent: fa
   const testPreparation = (verification: "valid" | "tampered") =>
     joinedProgressTest(async ({ expect, signal }) => {
       const directory = tempDirs.make("oc-vt-preparation-progress-");
-      const env = {
-        ...process.env,
+      const env = testRunnerFixtureEnv({
         OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "120000",
         OPENCLAW_VITEST_NO_OUTPUT_HEARTBEAT_MS: "30000",
-      };
+      });
       const controlled = createControlledWorkerCompiler(directory, env);
       const owner = createVitestWorkerRun(env);
       const generation = owner.descriptor.directory;
@@ -303,16 +305,15 @@ posixSerialDescribe("compiled subprocess preparation progress", { concurrent: fa
           await releaseCompiler.promise;
           return runManaged({ ...options, args: controlled.args(generation) });
         });
-      const readFile = fs.promises.readFile.bind(fs.promises);
-      const verificationRead = vi
-        .spyOn(fs.promises, "readFile")
-        .mockImplementation(async (...args) => {
-          if (args[0] === heldOutput) {
-            verificationStarted.resolve();
-            await releaseVerification.promise;
-          }
-          return readFile(...args);
-        });
+      const readFile = fs.readFile.bind(fs);
+      const verificationRead = vi.spyOn(fs, "readFile").mockImplementation((...args) => {
+        if (args[0] === heldOutput) {
+          verificationStarted.resolve();
+          void releaseVerification.promise.then(() => readFile(...args));
+          return;
+        }
+        return readFile(...args);
+      });
       const borrower = path.join(directory, "vitest.mjs");
       fs.writeFileSync(
         borrower,
@@ -444,7 +445,7 @@ process.send({event:"ready"});
         expect(onNoOutputTimeout).toHaveBeenCalledOnce();
         const result = await withinTest(handle.completion, signal);
         expect(handle.child.exitCode).toBe(0);
-        expect(result).toEqual({ code: 1, signal: null, groupJoined: true });
+        expect(result).toEqual({ code: 2, signal: null, groupJoined: true });
         expect(isProcessAlive(handle.child.pid!)).toBe(false);
       } finally {
         releaseCompiler.resolve();

@@ -1,7 +1,9 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
@@ -20,7 +22,7 @@ const runtime = vi.hoisted(() => {
       blocked: false as const,
       params,
     })),
-    createTools: vi.fn(() =>
+    createTools: vi.fn(async () =>
       ["session_status", "plugin_doctor"].map((name) => ({
         name,
         parameters: { type: "object", properties: {} },
@@ -34,7 +36,8 @@ const runtime = vi.hoisted(() => {
 vi.mock("../config/config.js", () => ({ getRuntimeConfig: () => runtime.cfg }));
 vi.mock("../config/io.js", () => ({ getRuntimeConfig: () => runtime.cfg }));
 vi.mock("./auth.js", () => ({ authorizeHttpGatewayConnect: runtime.authorize }));
-vi.mock("../agents/openclaw-tools.js", () => ({ createOpenClawTools: runtime.createTools }));
+// mock-isolation: Keep execution inert while exercising HTTP and WebSocket authorization.
+vi.mock("../agents/openclaw-tools.js", () => ({ createOpenClawToolsAsync: runtime.createTools }));
 vi.mock("../agents/agent-tools.js", () => ({ resolveToolLoopDetectionConfig: () => ({}) }));
 vi.mock("../agents/agent-tools.before-tool-call.js", () => ({
   runBeforeToolCallHook: runtime.beforeHook,
@@ -76,6 +79,7 @@ describe.each(["HTTP", "WebSocket"] as const)(
       sandbox?: "required";
       stored?: boolean;
       system?: boolean;
+      revokeMember?: boolean;
       expectedError?: string;
     }> = [
       {
@@ -114,12 +118,20 @@ describe.each(["HTTP", "WebSocket"] as const)(
         sandbox: "required",
         system: true,
       },
+      {
+        label: "denies tool execution when the member is revoked during the before-tool hook",
+        sessionKey: "agent:main:member-session",
+        stored: true,
+        revokeMember: true,
+        expectedError: "session is read-only",
+      },
     ];
 
     it.each(cases)("$label", async (testCase) => {
       await withOpenClawTestState({ label: "standalone-tool-role" }, async () => {
         const email = "standalone-operator@example.test";
         const profile = ensureProfileForEmail(email);
+        using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
         runtime.cfg = {
           agents: {
             defaults: { sandbox: { mode: "off" } },
@@ -148,11 +160,23 @@ describe.each(["HTTP", "WebSocket"] as const)(
           const entry = {
             sessionId: "standalone-guest-session",
             updatedAt: 1,
-            visibility: "shared" as const,
-            createdActor: { type: "human" as const, source: "profile" as const, id: profile.id },
+            visibility: testCase.revokeMember ? ("read-only" as const) : ("shared" as const),
+            createdActor: {
+              type: "human" as const,
+              source: "profile" as const,
+              id: testCase.revokeMember ? "another-creator" : profile.id,
+            },
             sandbox: "required" as const,
           };
           await upsertSessionEntryCore({ agentId: "main", sessionKey }, entry);
+          if (testCase.revokeMember) {
+            const scope = { agentId: "main", sessionKey };
+            await addSessionMember(scope, { identityId: profile.id, addedBy: "another-creator" });
+            runtime.beforeHook.mockImplementationOnce(async ({ params }) => {
+              await removeSessionMember(scope, profile.id);
+              return { blocked: false, params };
+            });
+          }
         }
         const input = {
           name: testCase.toolName ?? "session_status",
@@ -200,8 +224,12 @@ describe.each(["HTTP", "WebSocket"] as const)(
           });
         }
         if (testCase.expectedError) {
-          expect(runtime.beforeHook).not.toHaveBeenCalled();
-          expect(runtime.createTools).not.toHaveBeenCalled();
+          if (testCase.revokeMember) {
+            expect(runtime.beforeHook).toHaveBeenCalledOnce();
+          } else {
+            expect(runtime.beforeHook).not.toHaveBeenCalled();
+            expect(runtime.createTools).not.toHaveBeenCalled();
+          }
           expect(runtime.execute).not.toHaveBeenCalled();
         } else {
           expect(runtime.beforeHook).toHaveBeenCalledOnce();

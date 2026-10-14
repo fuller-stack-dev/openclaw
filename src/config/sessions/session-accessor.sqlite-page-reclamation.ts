@@ -4,7 +4,6 @@ import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../../infra/sqlite-worker-identity.js";
-import { createSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
 import {
   isIncognitoOpenClawAgentSqlitePath,
@@ -13,7 +12,6 @@ import {
 import type {
   AgentDatabaseExecutionFileIdentity,
   AgentDatabaseOperations,
-  AgentDatabaseRequestExecutionSource,
 } from "../../state/openclaw-agent-execution-contract.js";
 import {
   captureOpenClawAgentDatabaseExecution,
@@ -27,10 +25,15 @@ import {
   withSqliteSessionDatabase,
 } from "./session-accessor.sqlite-scope.js";
 import { withSqliteMutationWorkerLifetime } from "./session-accessor.sqlite-worker-request.js";
-import type {
-  PublishedSessionTranscriptArchive,
-  SessionArchivePruningOperations,
+import {
+  ARCHIVE_RETENTION_BATCH_SIZE,
+  type PublishedSessionTranscriptArchive,
+  type SessionArchivePruningOperations,
 } from "./session-history-archive-pruning.types.js";
+import { captureIncognitoSessionSource } from "./session-incognito-binding.js";
+import { maintenanceLane } from "./session-transcript-worker-resources.js";
+import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
+import { createSessionWorkerExecutionSource } from "./session-worker-execution-source.js";
 
 export type SqliteSessionPageReclaimer = (maxPages?: number) => Promise<SqliteWalReclamationResult>;
 
@@ -38,12 +41,21 @@ export type SqliteSessionPageReclaimer = (maxPages?: number) => Promise<SqliteWa
 export async function readSqliteSessionArchivePruning(
   input: OpenClawAgentDatabaseOptions,
 ): Promise<PublishedSessionTranscriptArchive | null> {
+  const incognitoBinding = captureIncognitoSessionSource({ ...input, storePath: input.path });
+  if (incognitoBinding) {
+    incognitoBinding.admissionSignal?.throwIfAborted();
+    if (!("kind" in incognitoBinding)) {
+      incognitoBinding.actor.assertReadable();
+    }
+    return null;
+  }
   const options = resolveSessionReclamationDatabaseOptions(input);
   if (!supportsOpenClawAgentDatabaseExecution(options)) {
     const { readSessionArchivePruningInDatabase } =
       await import("./session-history-archive-pruning.worker.js");
-    return withSqliteSessionDatabase(options, (database) =>
-      readSessionArchivePruningInDatabase(database),
+    return withSqliteSessionDatabase(
+      options,
+      (database) => readSessionArchivePruningInDatabase(database)[0] ?? null,
     );
   }
   const physical = readDatabasePathIdentitySync(options.path);
@@ -56,11 +68,9 @@ export async function readSqliteSessionArchivePruning(
     physicalIdentity: physical.key.slice("file:".length),
     nativeLocation: physical.canonicalPath,
   };
-  const { withSessionHistoryWorkerDatabase } =
-    await import("./session-transcript-worker-runtime.js");
   assertExistingDatabaseIdentity(options.path, physical.key);
   return withSessionHistoryWorkerDatabase(
-    { ...databaseOptions, requestedPath: options.path },
+    { ...databaseOptions, requestedPaths: [options.path] },
     async (reader) => {
       assertExistingDatabaseIdentity(options.path, physical.key);
       const result = await reader.readArchivePruning({
@@ -69,7 +79,7 @@ export async function readSqliteSessionArchivePruning(
       });
       reader.assertCurrent();
       assertExistingDatabaseIdentity(options.path, physical.key);
-      return result;
+      return result[0] ?? null;
     },
   );
 }
@@ -84,6 +94,14 @@ export async function withSqliteSessionPageReclamation<T>(
     archives: SessionArchivePruningOperations,
   ) => Promise<T>,
 ): Promise<T> {
+  const incognitoBinding = captureIncognitoSessionSource({ ...input, storePath: input.path });
+  if (incognitoBinding) {
+    incognitoBinding.admissionSignal?.throwIfAborted();
+    if (!("kind" in incognitoBinding)) {
+      incognitoBinding.actor.assertReadable();
+    }
+    throw new Error("Incognito sessions have no disk pages or archives to reclaim");
+  }
   const options = resolveSessionReclamationDatabaseOptions(input);
   const incognito = isIncognitoOpenClawAgentSqlitePath(options.path, options);
   const nativeOwner = !supportsOpenClawAgentDatabaseExecution(options);
@@ -116,6 +134,7 @@ export async function withSqliteSessionPageReclamation<T>(
         readSessionArchivePruningInDatabase,
         deletePublishedSessionArchiveInDatabase,
         removeLegacySessionArchiveInDatabase,
+        pruneSessionArchivesByRetentionInDatabase,
       } = await import("./session-history-archive-pruning.worker.js");
       const databaseOptions = physical ? { ...options, path: physical.canonicalPath } : options;
       const assertNativeCurrent = () => {
@@ -155,8 +174,27 @@ export async function withSqliteSessionPageReclamation<T>(
               databaseOptions,
               (database) => {
                 assertNativeCurrent();
-                return readSessionArchivePruningInDatabase(database);
+                return readSessionArchivePruningInDatabase(database)[0] ?? null;
               },
+              assertNativeCurrent,
+            ),
+          readRetentionCandidates: async () =>
+            withSqliteSessionDatabase(
+              databaseOptions,
+              (database) =>
+                readSessionArchivePruningInDatabase(database, ARCHIVE_RETENTION_BATCH_SIZE),
+              assertNativeCurrent,
+            ),
+          pruneRetention: async (retention) =>
+            withSqliteSessionDatabase(
+              databaseOptions,
+              (database) =>
+                pruneSessionArchivesByRetentionInDatabase(
+                  database,
+                  databaseOptions,
+                  retention,
+                  assertNativeCurrent,
+                ),
               assertNativeCurrent,
             ),
           removeLegacy: async (filePath) =>
@@ -208,21 +246,10 @@ export async function withSqliteSessionPageReclamation<T>(
       assertExistingDatabaseIdentity(options.path, physical.key);
       assertExistingDatabaseIdentity(databaseOptions.path, physical.key);
     };
-    const source: AgentDatabaseRequestExecutionSource = {
-      assertCurrent: assertPruningCurrent,
-      createAdmission(binding) {
-        return () => ({
-          nativeLocations: binding.nativeLocations,
-          admission: createSqliteWorkerOperationAdmission((request, grant) => {
-            binding.authorize(request);
-            assertPruningCurrent();
-            if (!grant()) {
-              throw new Error("SQLite archive pruning authority expired");
-            }
-          }, binding.attachment),
-        });
-      },
-    };
+    const source = createSessionWorkerExecutionSource(
+      assertPruningCurrent,
+      "SQLite archive pruning authority expired",
+    );
     const write = async <Value>(
       operation: (
         worker: Pick<SqliteWorkerStore<AgentDatabaseOperations>, "execute">,
@@ -252,13 +279,9 @@ export async function withSqliteSessionPageReclamation<T>(
       return result.value;
     };
     try {
-      const [{ withSessionHistoryWorkerDatabase }, { maintenanceLane }] = await Promise.all([
-        import("./session-transcript-worker-runtime.js"),
-        import("./session-transcript-worker-resources.js"),
-      ]);
       assertPruningCurrent();
       return await withSessionHistoryWorkerDatabase(
-        { ...databaseOptions, requestedPath: options.path },
+        { ...databaseOptions, requestedPaths: [options.path] },
         async (reader) => {
           assertPruningCurrent();
           return run(
@@ -291,8 +314,27 @@ export async function withSqliteSessionPageReclamation<T>(
                   expectedIdentity,
                 });
                 assertPruningCurrent();
+                return result[0] ?? null;
+              },
+              readRetentionCandidates: async () => {
+                assertPruningCurrent();
+                const result = await reader.readArchivePruning({
+                  env: databaseOptions.env,
+                  expectedIdentity,
+                  limit: ARCHIVE_RETENTION_BATCH_SIZE,
+                });
+                assertPruningCurrent();
                 return result;
               },
+              pruneRetention: (retention) =>
+                write(
+                  (worker) =>
+                    worker.execute({
+                      type: "session.archivePruning.pruneRetention",
+                      input: retention,
+                    }),
+                  "session.history.archive-prune",
+                ),
               removeLegacy: (filePath) =>
                 write(
                   (worker) =>

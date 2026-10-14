@@ -18,6 +18,10 @@ import { resolveModelRuntimePolicy } from "./model-runtime-policy.js";
 
 const CLI_MODEL_CATALOG_FAILURE_RETRY_MS = 60_000;
 
+export type PreparedCliModelCatalogReason =
+  | CliBackendModelCatalogContext["reason"]
+  | ((backendId: string) => CliBackendModelCatalogContext["reason"]);
+
 /** The prepared catalog owner, not a picker request, selects the executable and environment. */
 export async function prepareCliModelCatalog(params: {
   catalog: ModelCatalogSnapshot;
@@ -28,7 +32,7 @@ export async function prepareCliModelCatalog(params: {
   configuredModelRefs: readonly ModelCatalogRef[];
   env: NodeJS.ProcessEnv;
   cwd: string;
-  reason: CliBackendModelCatalogContext["reason"];
+  reason: PreparedCliModelCatalogReason;
   signal: AbortSignal;
   assertCurrent: () => void;
 }): Promise<Readonly<Record<string, CliBackendModelCatalogResult>>> {
@@ -113,7 +117,7 @@ export async function prepareCliModelCatalog(params: {
         env,
         cwd: params.cwd,
         modelIds,
-        reason: params.reason,
+        reason: typeof params.reason === "function" ? params.reason(backend.id) : params.reason,
         signal: params.signal,
         assertCurrent: params.assertCurrent,
         withMaintenance: (update) =>

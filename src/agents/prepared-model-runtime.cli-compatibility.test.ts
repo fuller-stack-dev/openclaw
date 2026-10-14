@@ -164,6 +164,156 @@ it("prepares static and discovered models before publication, then renews only o
   }
 });
 
+it.for([
+  { requirement: "known requirement", priorFailure: false, updateSucceeds: true },
+  { requirement: "newly discovered requirement", priorFailure: false, updateSucceeds: true },
+  { requirement: "newly discovered requirement", priorFailure: true, updateSucceeds: true },
+  { requirement: "known requirement", priorFailure: true, updateSucceeds: false },
+] as const)(
+  "publishes the current CLI menu for $requirement, prior failure=$priorFailure, update succeeds=$updateSucceeds",
+  async ({ requirement, priorFailure, updateSucceeds }) => {
+    const requiresUpgrade = { ...first, id: "requires-upgrade", name: "Requires upgrade" };
+    let refreshRequested = false;
+    let installed = false;
+    let repairs = 0;
+    // The backend already knows a failed attempt made by another catalog owner.
+    // Persistence is covered by cli-readiness.test.ts; this owner must carry manual intent.
+    let failedCooldown = priorFailure;
+    const input = installCatalogBackend(async (context) => {
+      context.assertCurrent();
+      const needsUpgrade =
+        requirement === "known requirement" || context.modelIds.includes(requiresUpgrade.id);
+      if (
+        refreshRequested &&
+        needsUpgrade &&
+        !installed &&
+        (!failedCooldown || context.reason === "manual")
+      ) {
+        // Bound a broken host's repeated manual retries so the assertion can report them.
+        if (repairs > 1) {
+          throw new Error("Repeated the same failed repair within one refresh");
+        }
+        await context.withMaintenance!(async () => {
+          context.assertCurrent();
+          repairs += 1;
+          installed = updateSucceeds;
+          failedCooldown = !updateSucceeds;
+        });
+      }
+      return {
+        models: Object.fromEntries(
+          context.modelIds.map((id) => [id, { available: installed || id === "first" }]),
+        ),
+        runtimeVersion: installed ? "2.0.0" : "1.0.0",
+        nextCheckAt: Date.now() + 86_400_000,
+      };
+    });
+    // This boundary reports the menu of the binary present when discovery runs.
+    // Repairing after discovery cannot retroactively add rows to that observation.
+    mocks.runPreparedModelCatalogWorker.mockImplementation(async () => {
+      const entries = installed
+        ? [first, requiresUpgrade, discovered]
+        : refreshRequested && requirement === "newly discovered requirement"
+          ? [first, requiresUpgrade]
+          : [first];
+      return {
+        entries,
+        routeVariants: entries,
+        providerOutcomes: [
+          { provider: "custom", status: "ready", listedModelIds: entries.map(({ id }) => id) },
+        ],
+      };
+    });
+    const owner = await publishPreparedModelRuntimeSnapshot(input, { catalogMode: "static" });
+    const ordinary = await owner.loadFullModelCatalog!({ refresh: true, wait: true });
+    expect(ordinary.entries.map(({ id }) => id)).toEqual(["first"]);
+    expect(repairs).toBe(0);
+    refreshRequested = true;
+    const repaired = await loadPreparedGatewayModelCatalogSnapshot({
+      agentId: "pro",
+      getConfig: () => input.config,
+      readOnly: false,
+      refreshFullCatalog: true,
+      cliCompatibilityRefresh: { assertCurrent: () => {} },
+    });
+    const expectedIds = updateSucceeds ? ["discovered", "first", "requires-upgrade"] : ["first"];
+    expect(repaired.entries.map(({ id }) => id).toSorted()).toEqual(expectedIds);
+    expect(repaired.providerOutcomes).toContainEqual(
+      expect.objectContaining({
+        provider: "custom",
+        status: "ready",
+        listedModelIds: updateSucceeds ? ["first", "requires-upgrade", "discovered"] : ["first"],
+      }),
+    );
+    if (updateSucceeds) {
+      expect(repaired.cliRuntimeCompatibility?.["fixture-cli"]?.models.discovered).toEqual({
+        available: true,
+      });
+    }
+    expect(repairs).toBe(1);
+    const next = await owner.loadFullModelCatalog!({ refresh: true, wait: true });
+    expect(next.entries.map(({ id }) => id).toSorted()).toEqual(expectedIds);
+    expect(repairs).toBe(1);
+  },
+);
+
+it("publishes the upgraded menu when a manual refresh joins expiry repair", async ({ signal }) => {
+  const started = createDeferred();
+  const finish = createDeferred();
+  const manualWaiting = createDeferred();
+  const now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  let installed = false;
+  let repairs = 0;
+  let manual: Promise<unknown> | undefined;
+  const input = installCatalogBackend(async (context) => {
+    if (context.reason === "routine" && !installed) {
+      await context.withMaintenance!(async () => {
+        started.resolve();
+        await finish.promise;
+        context.assertCurrent();
+        repairs += 1;
+        installed = true;
+      });
+    }
+    return {
+      models: Object.fromEntries(context.modelIds.map((id) => [id, { available: true }])),
+      nextCheckAt: Date.now() + 86_400_000,
+    };
+  });
+  mocks.runPreparedModelCatalogWorker.mockImplementation(async () => ({
+    entries: installed ? [first, discovered] : [first],
+    routeVariants: installed ? [first, discovered] : [first],
+    providerOutcomes: [{ provider: "custom", status: "ready" }],
+  }));
+  try {
+    const owner = await publishPreparedModelRuntimeSnapshot(input, { catalogMode: "static" });
+    await owner.loadFullModelCatalog!({ refresh: true, wait: true });
+    clock.mockReturnValue(now + 86_400_001);
+    owner.refreshExpiredModelCatalog!();
+    await withinTest(started.promise, signal);
+    const request = owner.loadFullModelCatalog!({
+      refresh: true,
+      cliCompatibilityRefresh: { signal, assertCurrent: () => manualWaiting.resolve() },
+    });
+    manual = request;
+    await withinTest(manualWaiting.promise, signal);
+    finish.resolve();
+    const catalog = await withinTest(request, signal);
+    expect(catalog.entries.map(({ id }) => id).toSorted()).toEqual(["discovered", "first"]);
+    expect(repairs).toBe(1);
+    expect(
+      owner.readFullModelCatalog!()
+        ?.entries.map(({ id }) => id)
+        .toSorted(),
+    ).toEqual(["discovered", "first"]);
+  } finally {
+    finish.resolve();
+    await Promise.allSettled(manual ? [manual] : []);
+    clock.mockRestore();
+  }
+});
+
 it("recovers a failed compatibility observation on the first inventory request after its retry deadline", async ({
   signal,
 }) => {
@@ -240,13 +390,18 @@ it("waits for an authorized Gateway manual compatibility pass after concurrent d
   const started = createDeferred();
   const release = createDeferred();
   const reasons: string[] = [];
+  let repaired = false;
   const prepare = vi.fn(async (context: CliBackendModelCatalogContext) => {
     context.assertCurrent();
     reasons.push(context.reason);
+    if (context.reason === "manual" && !repaired) {
+      await context.withMaintenance!(async () => {
+        context.assertCurrent();
+        repaired = true;
+      });
+    }
     return {
-      models: Object.fromEntries(
-        context.modelIds.map((id) => [id, { available: context.reason === "manual" }]),
-      ),
+      models: Object.fromEntries(context.modelIds.map((id) => [id, { available: repaired }])),
       nextCheckAt: Date.now() + 86_400_000,
     };
   });
@@ -277,7 +432,7 @@ it("waits for an authorized Gateway manual compatibility pass after concurrent d
     release.resolve();
     await discovery;
     const result = await manual;
-    expect(reasons).toEqual(["discovery", "discovery", "manual"]);
+    expect(reasons.filter((reason) => reason === "manual")).toEqual(["manual"]);
     expect(assertCurrent).toHaveBeenCalled();
     expect(result.cliRuntimeCompatibility?.["fixture-cli"]?.models.discovered?.available).toBe(
       true,
@@ -296,8 +451,8 @@ it("does not repair through a Gateway request whose authority expired during dis
   const installed: string[] = [];
   const input = installCatalogBackend(async (context) => {
     context.assertCurrent();
-    if (context.reason === "manual") {
-      installed.push(...context.modelIds);
+    if (context.modelIds.includes("discovered")) {
+      await context.withMaintenance!(async () => installed.push(...context.modelIds));
     }
     return { models: {}, nextCheckAt: Date.now() + 86_400_000 };
   });

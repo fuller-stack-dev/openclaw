@@ -41,6 +41,7 @@ it.each([true, false])(
       { agentId: "main", sessionEntry: { execHost: "node", execNode: "fixture-node" } },
       models,
       {},
+      undefined,
     );
     expect(projected[0]).toEqual({ provider: "claude-cli", id: "new-model", name: "New" });
     expect(projected[1]?.available).toBe(true);
@@ -54,3 +55,26 @@ it.each([true, false])(
     );
   },
 );
+
+it("keeps worker-owned API auth projection when the session also names a node exec host", () => {
+  const projected = projectSessionModelCatalog(
+    {
+      agentId: "main",
+      sessionKey: "agent:main:worker",
+      sessionEntry: { execHost: "node", execNode: "fixture-node" },
+      workerInference: "worker",
+    },
+    [
+      {
+        provider: "fixture",
+        id: "worker-model",
+        name: "Worker",
+        available: false,
+        unavailableReason: "missing-auth",
+      },
+    ],
+    { agents: { defaults: { model: "fixture/worker-model" } } },
+    undefined,
+  );
+  expect(projected).toEqual([{ provider: "fixture", id: "worker-model", name: "Worker" }]);
+});

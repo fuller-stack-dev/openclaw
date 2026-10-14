@@ -1,6 +1,10 @@
 import { EventEmitter, once } from "node:events";
 import { createServer, get, type IncomingMessage, type ServerResponse } from "node:http";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import type { InternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 
 class FixtureState {
@@ -21,6 +25,7 @@ class FixtureState {
   beforeRead?: () => Promise<void>;
   beforeRefresh?: () => Promise<void>;
   beforeAuth?: () => Promise<void>;
+  beforeInline?: () => Promise<void>;
 }
 let fixture = new FixtureState();
 
@@ -99,11 +104,13 @@ vi.mock("./http-utils.js", () => ({
   },
 }));
 
+// mock-isolation: HTTP history fixtures control visibility and target replacement during awaited reads.
 vi.mock("./session-sharing.js", () => ({
-  createSessionListEntryFilter: ({ client }: { client: unknown }) =>
-    client ? () => fixture.visible : undefined,
+  prepareProjectedSessionSharing: ({ client }: { client: unknown }) => ({
+    entryFilter: client ? () => fixture.visible : undefined,
+  }),
   resolveSessionSharingTarget: () => ({
-    canonicalKey: "agent:main",
+    canonicalKey: "agent:main:main",
     agentId: "main",
     entry: {
       sessionId: fixture.sessionId,
@@ -114,14 +121,32 @@ vi.mock("./session-sharing.js", () => ({
   }),
 }));
 
-vi.mock("./session-utils.js", () => ({
-  resolveGatewaySessionStoreTargetWithStore: () => ({
-    storePath: "/tmp",
-    storeKeys: ["agent:main"],
-    canonicalKey: "agent:main",
-    agentId: "main",
-    store: {},
+// mock-isolation: Revocation tests retain synthetic mutation facts without admitting a physical store.
+vi.mock("./session-sharing-preparation.js", () => ({
+  prepareSessionMutationFacts: async () => ({
+    storageTarget: { agentId: "main", canonicalKey: "agent:main:main", storePath: "/tmp" },
+    prepareRead: () => undefined,
+    readCurrent: () => ({
+      target: {
+        agentId: "main",
+        canonicalKey: "agent:main:main",
+        storeKey: "agent:main:main",
+        storeKeys: ["agent:main:main"],
+        storePath: "/tmp",
+        entry: {
+          sessionId: fixture.sessionId,
+          lifecycleRevision: fixture.lifecycleRevision,
+          sessionStartedAt: fixture.sessionStartedAt,
+        },
+      },
+      membership: new Set<string>(),
+    }),
+    release() {},
   }),
+}));
+
+// mock-isolation: History fixtures resolve synthetic transcript paths and current entries without disk lookup.
+vi.mock("./session-utils.js", () => ({
   resolveCanonicalSessionEntryFromStoreKeys: () => ({
     sessionId: "session-1",
     lifecycleRevision: fixture.lifecycleRevision,
@@ -148,11 +173,16 @@ vi.mock("./session-history-state.js", () => ({
     fromSnapshot: (_params: unknown) => ({
       snapshot: () => ({ items: [], nextCursor: null, messages: [] }),
       retainRecentMessages: () => ({ items: [], nextCursor: null, messages: [] }),
-      appendInlineMessage: ({ message, messageId }: { message: unknown; messageId?: string }) => ({
+      prepareInlineMessage: async ({
         message,
-        messageSeq: 1,
         messageId,
-      }),
+      }: {
+        message: unknown;
+        messageId?: string;
+      }) => {
+        await fixture.beforeInline?.();
+        return () => ({ message, messageSeq: 1, messageId });
+      },
       shouldRefreshForTranscriptPath: () => false,
       refreshAsync: async () => {
         await fixture.beforeRefresh?.();
@@ -177,7 +207,7 @@ const guestProfile = {
   hasAvatar: false,
   updatedAt: 1,
 };
-const SESSION_HISTORY_URL = "/sessions/agent%3Amain/history";
+const SESSION_HISTORY_URL = "/sessions/agent%3Amain%3Amain/history";
 const SESSION_FILE = "/tmp/session-1.jsonl";
 const TRUSTED_PROXY_STARTUP_OPTIONS = {
   auth: { mode: "trusted-proxy" } as never,
@@ -211,6 +241,7 @@ class MockRes extends EventEmitter {
 
   write(chunk: string) {
     this.writes.push(chunk);
+    this.emit("write", chunk);
     const written = this.writes.join("");
     if (this.closeOnRetry && written.includes("retry:") && written.endsWith("\n\n")) {
       this.closeOnRetry = false;
@@ -257,14 +288,28 @@ async function openStream(params: { closeOnRetry?: boolean; expectSubscribed?: b
   const req = new MockReq();
   const res = new MockRes();
   res.closeOnRetry = params.closeOnRetry;
+  const initial =
+    params.expectSubscribed === false ? undefined : waitForFrame(res, "event: history");
   expect(await handle(req, res)).toBe(true);
   if (params.expectSubscribed === false) {
     expect(fixture.onUpdate).toBeUndefined();
   } else {
-    await vi.waitFor(() => expect(res.writes.join("")).toContain("event: history"));
+    await initial;
     expect(fixture.onUpdate).toBeTypeOf("function");
   }
   return { req, res };
+}
+
+function waitForFrame(res: MockRes, text: string): Promise<void> {
+  return new Promise((resolve) => {
+    const onWrite = (chunk: string) => {
+      if (chunk.includes(text)) {
+        res.off("write", onWrite);
+        resolve();
+      }
+    };
+    res.on("write", onWrite);
+  });
 }
 
 async function withRealStream(
@@ -333,7 +378,7 @@ function emitTranscriptTextUpdate(
     target: {
       agentId: "main",
       sessionId: "session-1",
-      sessionKey: "agent:main",
+      sessionKey: "agent:main:main",
       storePath: "/tmp",
     },
     lifecycleRevision: "before-reset",
@@ -351,8 +396,11 @@ async function expectStreamClosedWithoutMessage(res: MockRes, text: string) {
   expect(res.writes.join("")).not.toContain(text);
 }
 
+beforeEach(() => setRuntimeConfigSnapshot({ gateway: fixture.gatewayConfig }));
+
 afterEach(() => {
   fixture = new FixtureState();
+  clearRuntimeConfigSnapshot();
 });
 
 describe("session history SSE auth revocation", () => {
@@ -435,16 +483,6 @@ describe("session history SSE auth revocation", () => {
     }
   });
 
-  it("closes an existing stream before disclosure when profile access is revoked", async () => {
-    fixture.profile = guestProfile;
-    const { res } = await openStream();
-    fixture.visible = false;
-
-    emitTranscriptTextUpdate("role-revoked secret");
-
-    await expectStreamClosedWithoutMessage(res, "role-revoked secret");
-  });
-
   it("keeps inline delivery between coalesced refreshes while authorization is pending", async () => {
     const { res } = await openStream();
     const { entered, release, wait } = readBarrier();
@@ -478,6 +516,65 @@ describe("session history SSE auth revocation", () => {
     }
   });
 
+  it.each(["sharing", "replacement", "reset", "close", "failure"] as const)(
+    "withholds a delayed inline message after %s",
+    async (change) => {
+      fixture.profile = guestProfile;
+      const { res } = await openStream();
+      const barrier = readBarrier();
+      fixture.beforeInline = async () => {
+        await barrier.wait();
+        if (change === "failure") {
+          throw new Error("inline visibility worker failed");
+        }
+      };
+      const closed = once(res, "close");
+      emitTranscriptTextUpdate("pending inline content");
+      await barrier.entered.promise;
+      if (change === "sharing") {
+        fixture.visible = false;
+      } else if (change === "replacement") {
+        fixture.sessionId = "successor";
+      } else if (change === "reset") {
+        fixture.lifecycleRevision = "after-reset";
+      } else if (change === "close") {
+        res.end();
+      }
+      barrier.release.resolve();
+      await closed;
+      expect(res.writes.join("")).not.toContain("pending inline content");
+      expect(fixture.onUpdate).toBeUndefined();
+    },
+  );
+
+  it("serializes appends and trailing refreshes behind pending inline visibility", async () => {
+    const { res } = await openStream();
+    const barrier = readBarrier();
+    fixture.beforeInline = barrier.wait;
+    const refreshed = waitForFrame(res, "private refreshed history");
+    try {
+      emitTranscriptTextUpdate("first queued append");
+      await barrier.entered.promise;
+      emitTranscriptTextUpdate("second queued append");
+      fixture.onUpdate?.({ sessionFile: SESSION_FILE });
+      expect(res.writes.filter((frame) => frame.startsWith("event:"))).toHaveLength(1);
+      barrier.release.resolve();
+      await refreshed;
+      const frames = res.writes.filter((frame) => frame.startsWith("event:"));
+      expect(frames.map((frame) => frame.split("\n")[0])).toEqual([
+        "event: history",
+        "event: message",
+        "event: message",
+        "event: history",
+      ]);
+      expect(frames[1]).toContain("first queued append");
+      expect(frames[2]).toContain("second queued append");
+    } finally {
+      barrier.release.resolve();
+      res.end();
+    }
+  });
+
   it.each([
     {
       name: "projection rebuilding",
@@ -505,6 +602,7 @@ describe("session history SSE auth revocation", () => {
     const { res } = await openStream();
 
     fixture.gatewayConfig = {};
+    setRuntimeConfigSnapshot({ gateway: fixture.gatewayConfig });
 
     emitTranscriptTextUpdate("stale-proxy event");
 
@@ -516,6 +614,7 @@ describe("session history SSE auth revocation", () => {
 
     fixture.authChecks = 0;
     fixture.gatewayConfig = {};
+    setRuntimeConfigSnapshot({ gateway: fixture.gatewayConfig });
 
     emitTranscriptTextUpdate("other session", {
       sessionFile: "/tmp/other-session.jsonl",

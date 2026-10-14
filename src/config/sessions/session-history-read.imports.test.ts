@@ -1,8 +1,18 @@
 import { expect, it } from "vitest";
 import { findSourceImportBackedges } from "../../../test/helpers/source-import-closure.js";
 
+it("keeps history worker transport independent of host config loading", () => {
+  expect(
+    findSourceImportBackedges("src/config/sessions/session-transcript-worker-runtime.ts", [
+      "src/config/io.ts",
+      "src/config/io.runtime.ts",
+    ]),
+  ).toEqual([]);
+});
+
 const readOwners = [
   "src/config/sessions/session-transcript.worker.ts",
+  "src/config/sessions/session-accessor.sqlite-branches.ts",
   "src/gateway/session-history-readonly-reader.ts",
   "src/gateway/session-transcript-preview-reader.ts",
   "src/gateway/server-methods/chat-history-page-kernel.ts",
@@ -32,6 +42,7 @@ it("keeps lazy readers independent of unrelated runtime barrels", () => {
   expect(
     findSourceImportBackedges(
       [
+        "src/gateway/session-history-worker-reader.ts",
         "src/config/sessions/session-store-target-inventory.ts",
         "src/config/sessions/session-entry-read.worker.ts",
         "src/config/sessions/session-accessor.sqlite-model-context.ts",
@@ -43,6 +54,8 @@ it("keeps lazy readers independent of unrelated runtime barrels", () => {
         "src/config/sessions/session-accessor.sqlite-read.ts",
         "src/config/sessions/session-accessor.sqlite-exact-read.ts",
         "packages/ai/src/transports.ts",
+        "packages/ai/src/internal/default-runtime.ts",
+        "packages/gateway-protocol/src/schema/users.ts",
       ],
     ),
   ).toEqual([]);

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { validateModelsListParams } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as deviceRevocation from "../device-revocation.js";
 import {
   authorizeOperatorScopesForMethod,
@@ -9,7 +10,15 @@ import {
   resolveLeastPrivilegeOperatorScopesForMethod,
 } from "../method-scopes.js";
 import * as operatorRolePolicy from "../operator-role-policy.js";
+import {
+  readPreparedCatalog,
+  registerGatewayModelCatalogPrivateAccess,
+} from "../server-model-catalog-auth.js";
 import { captureModelsCliCompatibilityRefresh } from "./models-compatibility-refresh.js";
+import {
+  createModelsListTestContext,
+  providerCatalogEntry,
+} from "./models-list-result.openai-routes.test-support.js";
 import { modelsHandlers } from "./models.js";
 import type {
   GatewayClient,
@@ -100,6 +109,67 @@ describe("manual model CLI compatibility refresh", () => {
           message: expect.stringContaining("operator.write"),
         }),
       );
+    },
+  );
+
+  it.each(["success", "failure"] as const)(
+    "retains manual authority through prepared execution and releases it after %s",
+    async (outcome) => {
+      await withOpenClawTestState({ label: "manual-cli-prepared-read" }, async (state) => {
+        const options = createRequest(["operator.write"], {
+          ...manualParams,
+          agentId: "main",
+          view: "all",
+          includeDefaultModels: false,
+        });
+        const context = createModelsListTestContext({
+          cfg: { agents: { entries: { main: {} } } },
+          agentDir: state.agentDir(),
+          workspaceDir: state.workspaceDir,
+          catalog: [providerCatalogEntry("fixture", "ready")],
+          catalogComplete: true,
+        });
+        options.context = context;
+        const snapshot = (await readPreparedCatalog(context, "main"))!;
+        let refresh: { assertCurrent: () => void; signal?: AbortSignal } | undefined;
+        let maintenanceCompleted = false;
+        registerGatewayModelCatalogPrivateAccess(context.loadGatewayModelCatalogSnapshot, {
+          readPrepared: async () => snapshot,
+          loadDeferred: async (params) => {
+            refresh = params?.cliCompatibilityRefresh;
+            expect(refresh).toBeDefined();
+            refresh!.assertCurrent();
+            await Promise.resolve();
+            refresh!.assertCurrent();
+            expect(refresh!.signal?.aborted).toBe(false);
+            if (outcome === "failure") {
+              throw new Error("Fixture installer failed");
+            }
+            maintenanceCompleted = true;
+            return snapshot;
+          },
+        });
+        // The real handler prepares and later consumes its reader. Maintenance must
+        // remain authorized between those phases and settle before request cleanup.
+        if (outcome === "failure") {
+          await expect(modelsHandlers["models.list"]!(options)).rejects.toThrow(
+            "Fixture installer failed",
+          );
+          expect(options.respond).not.toHaveBeenCalled();
+        } else {
+          await modelsHandlers["models.list"]!(options);
+          expect(options.respond).toHaveBeenCalledWith(
+            true,
+            expect.objectContaining({
+              models: [expect.objectContaining({ provider: "fixture", id: "ready" })],
+            }),
+            undefined,
+          );
+        }
+        expect(maintenanceCompleted).toBe(outcome === "success");
+        expect(refresh?.signal?.aborted).toBe(true);
+        expect(() => refresh!.assertCurrent()).toThrow("Manual CLI compatibility request finished");
+      });
     },
   );
 

@@ -12,6 +12,13 @@ vi.mock("./session-catalog-executable.js", () => ({
   resolveClaudeTerminalExecutable: vi.fn(),
 }));
 
+const subsystemLogMock = vi.hoisted(() => ({ warn: vi.fn(), verbose: vi.fn() }));
+
+vi.mock("openclaw/plugin-sdk/runtime-env", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/runtime-env")>()),
+  createSubsystemLogger: vi.fn(() => subsystemLogMock),
+}));
+
 type CommandRunner = OpenClawPluginApi["runtime"]["system"]["runCommandWithTimeout"];
 type CommandResult = Awaited<ReturnType<CommandRunner>>;
 type WrapperHook = "wrapStreamFn" | "wrapSimpleCompletionStreamFn";
@@ -105,18 +112,55 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  subsystemLogMock.warn.mockClear();
+  subsystemLogMock.verbose.mockClear();
+});
+
+describe("Claude version probe failure diagnostics (#157541)", () => {
+  it.each([
+    {
+      mode: "missing executable",
+      setup: () => {
+        vi.mocked(resolveClaudeTerminalExecutable).mockReturnValue(undefined);
+        return vi.fn<CommandRunner>().mockResolvedValue(versionResult("2.1.281"));
+      },
+      expectWarn: "executable-missing",
+    },
+    {
+      mode: "command failure",
+      setup: () => vi.fn<CommandRunner>().mockRejectedValue(new Error("synthetic launch failure")),
+      expectWarn: "probe-error",
+    },
+    {
+      mode: "unparseable output",
+      setup: () => vi.fn<CommandRunner>().mockResolvedValue(versionResult("unrecognized output")),
+      expectWarn: "unparseable-output",
+    },
+  ])("warns with cause when probe fails: $mode", async ({ setup, expectWarn }) => {
+    const fixture = register(setup());
+    const request = capture(fixture.provider, "wrapStreamFn");
+    await request.run();
+    // The request still goes through without identity (transport floor intact),
+    // but the failure must be visible instead of silent.
+    expect(request.base.mock.calls[0]?.[2]?.headers).toEqual(oauthOptions.headers);
+    expect(subsystemLogMock.warn).toHaveBeenCalledOnce();
+    expect(subsystemLogMock.warn.mock.calls[0]?.[0]).toEqual(expect.stringContaining(expectWarn));
+    // Security: warnings carry only bounded failure categories, never raw
+    // subprocess output or error text that could hold private paths/values.
+    for (const call of subsystemLogMock.warn.mock.calls) {
+      expect(String(call[0])).not.toContain("synthetic launch failure");
+      expect(String(call[0])).not.toContain("unrecognized output");
+    }
+  });
 });
 
 describe("Claude version discovery", () => {
-  it.each(["failure", "missing", "output-limit", "prerelease"] as const)(
+  it.each(["missing", "output-limit", "prerelease"] as const)(
     "leaves the transport floor intact after %s",
     async (mode) => {
       const runner = vi
         .fn<CommandRunner>()
         .mockResolvedValue(versionResult("2.1.400", { outputLimitExceeded: true }));
-      if (mode === "failure") {
-        runner.mockRejectedValue(new Error("synthetic launch failure"));
-      }
       if (mode === "missing") {
         vi.mocked(resolveClaudeTerminalExecutable).mockReturnValue(undefined);
       }
@@ -136,21 +180,21 @@ describe("Claude version discovery", () => {
     },
   );
 
-  it.each(["anthropic", "github-copilot"])(
-    "does not probe or alter identity on the %s non-OAuth route",
-    async (provider) => {
-      const fixture = register();
-      const request = capture(fixture.provider, "wrapStreamFn", { ...model, provider });
-      const options = {
-        apiKey: provider === "anthropic" ? "sk-ant-api-synthetic" : oauthOptions.apiKey,
-        headers: { "user-agent": "existing-client" },
-      };
-      await request.run(options);
-      expect(request.base.mock.calls[0]?.[2]?.headers).toEqual(options.headers);
-      expect(fixture.readRuntime).not.toHaveBeenCalled();
-      expect(resolveClaudeTerminalExecutable).not.toHaveBeenCalled();
-    },
-  );
+  it("does not probe or alter another provider's identity", async () => {
+    const fixture = register();
+    const request = capture(fixture.provider, "wrapStreamFn", {
+      ...model,
+      provider: "github-copilot",
+    });
+    const options = {
+      apiKey: oauthOptions.apiKey,
+      headers: { "user-agent": "existing-client" },
+    };
+    await request.run(options);
+    expect(request.base.mock.calls[0]?.[2]?.headers).toEqual(options.headers);
+    expect(fixture.readRuntime).not.toHaveBeenCalled();
+    expect(resolveClaudeTerminalExecutable).not.toHaveBeenCalled();
+  });
 });
 
 it("shares lazy CLI discovery across native execution and both OAuth wrappers", async () => {
@@ -174,29 +218,34 @@ it("shares lazy CLI discovery across native execution and both OAuth wrappers", 
       modelId: model.id,
     }),
   ].map((execution) => Promise.resolve(execution));
-  await Promise.resolve();
-  expect(fixture.runCommandWithTimeout).toHaveBeenCalledOnce();
-  expect(resolveClaudeTerminalExecutable).toHaveBeenCalledWith(process.env, {
-    pathStrategy: "direct",
-  });
-  expect(normal.base).not.toHaveBeenCalled();
-  expect(simple.base).not.toHaveBeenCalled();
-  pending.resolve(versionResult("2.1.400 (Claude Code)"));
-  await Promise.all(executions);
-  expect(normal.base.mock.calls[0]?.[2]?.headers).toEqual({
-    ...oauthOptions.headers,
-    "user-agent": "claude-cli/2.1.400",
-  });
-  expect(simple.base.mock.calls[0]?.[2]?.headers?.["user-agent"]).toBe("claude-cli/2.1.400");
-  expect(
-    fixture.backend.resolveExecutionArgs?.({
-      workspaceDir: "/synthetic",
-      provider: "claude-cli",
-      modelId: model.id,
-      useResume: false,
-      baseArgs: fixture.backend.config.args ?? [],
-    }),
-  ).toContain("--exclude-dynamic-system-prompt-sections");
+  try {
+    await Promise.resolve();
+    expect(fixture.runCommandWithTimeout).toHaveBeenCalledOnce();
+    expect(resolveClaudeTerminalExecutable).toHaveBeenCalledWith(process.env, {
+      pathStrategy: "direct",
+    });
+    expect(normal.base).not.toHaveBeenCalled();
+    expect(simple.base).not.toHaveBeenCalled();
+    pending.resolve(versionResult("2.1.400 (Claude Code)"));
+    await Promise.all(executions);
+    expect(normal.base.mock.calls[0]?.[2]?.headers).toEqual({
+      ...oauthOptions.headers,
+      "user-agent": "claude-cli/2.1.400",
+    });
+    expect(simple.base.mock.calls[0]?.[2]?.headers?.["user-agent"]).toBe("claude-cli/2.1.400");
+    expect(
+      fixture.backend.resolveExecutionArgs?.({
+        workspaceDir: "/synthetic",
+        provider: "claude-cli",
+        modelId: model.id,
+        useResume: false,
+        baseArgs: fixture.backend.config.args ?? [],
+      }),
+    ).toContain("--exclude-dynamic-system-prompt-sections");
+  } finally {
+    pending.resolve(versionResult("2.1.400 (Claude Code)"));
+    await Promise.allSettled(executions);
+  }
 });
 
 it("bounds requests even while process cleanup is pending and caches the fallback", async () => {
@@ -206,23 +255,28 @@ it("bounds requests even while process cleanup is pending and caches the fallbac
   const fixture = register(runner);
   const request = capture(fixture.provider, "wrapStreamFn");
   const response = request.run();
-  await vi.advanceTimersByTimeAsync(1_499);
-  expect(request.base).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(1);
-  await response;
-  expect(request.base.mock.calls[0]?.[2]?.headers).toEqual(oauthOptions.headers);
-  expect(runner).toHaveBeenCalledWith(["/synthetic/claude", "--version"], {
-    timeoutMs: 1_500,
-    killProcessTree: true,
-    killGraceMs: 100,
-    maxOutputBytes: { stdout: 1_024, stderr: 1_024 },
-    terminateOnOutputLimit: true,
-  });
-  await request.run();
-  expect(runner).toHaveBeenCalledOnce();
-  pending.resolve(versionResult("2.1.400 (Claude Code)"));
-  await request.run();
-  expect(request.base.mock.calls[2]?.[2]?.headers).toEqual(oauthOptions.headers);
+  try {
+    await vi.advanceTimersByTimeAsync(1_499);
+    expect(request.base).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await response;
+    expect(request.base.mock.calls[0]?.[2]?.headers).toEqual(oauthOptions.headers);
+    expect(runner).toHaveBeenCalledWith(["/synthetic/claude", "--version"], {
+      timeoutMs: 1_500,
+      killProcessTree: true,
+      killGraceMs: 100,
+      maxOutputBytes: { stdout: 1_024, stderr: 1_024 },
+      terminateOnOutputLimit: true,
+    });
+    await request.run();
+    expect(runner).toHaveBeenCalledOnce();
+    pending.resolve(versionResult("2.1.400 (Claude Code)"));
+    await request.run();
+    expect(request.base.mock.calls[2]?.[2]?.headers).toEqual(oauthOptions.headers);
+  } finally {
+    pending.resolve(versionResult("2.1.400 (Claude Code)"));
+    await Promise.allSettled([response]);
+  }
 });
 
 it("recognizes environment OAuth credentials while an explicit API key wins", async () => {
@@ -241,22 +295,43 @@ it("recognizes environment OAuth credentials while an explicit API key wins", as
   expect(request.base.mock.calls[1]?.[2]?.headers?.["user-agent"]).toBe("claude-cli/2.1.400");
 });
 
-it("reprobes after maintenance without letting an old in-flight result restore stale capabilities", async () => {
-  const old = createDeferred<CommandResult>();
-  const runner = vi
-    .fn<CommandRunner>()
-    .mockReturnValueOnce(old.promise)
-    .mockResolvedValue(versionResult("2.1.286 (Claude Code)"));
-  const api = createTestPluginApi();
-  Object.assign(api.runtime, { system: { runCommandWithTimeout: runner } });
-  const probe = createClaudeCodeVersionProbe(api);
-  const beforeUpdate = probe.resolveVersion();
-  await Promise.resolve();
-  probe.invalidateVersion();
-  expect(await probe.resolveVersion()).toBe("2.1.286");
-  old.resolve(versionResult("2.0.1 (Claude Code)"));
-  expect(await beforeUpdate).toBe("2.1.286");
-  expect(await probe.resolveVersion()).toBe("2.1.286");
-  expect(probe.supportsDynamicSystemPromptSections()).toBe(true);
-  expect(runner).toHaveBeenCalledTimes(2);
-});
+it.each(["old-version", "rejection", "timeout", "command-failure", "unparseable-output"] as const)(
+  "rejoins the updated version after an invalidated probe finishes with %s",
+  async (outcome) => {
+    vi.useFakeTimers();
+    const old = createDeferred<CommandResult>();
+    const runner = vi
+      .fn<CommandRunner>()
+      .mockReturnValueOnce(old.promise)
+      .mockResolvedValue(versionResult("2.1.286 (Claude Code)"));
+    const api = createTestPluginApi();
+    Object.assign(api.runtime, { system: { runCommandWithTimeout: runner } });
+    const probe = createClaudeCodeVersionProbe(api);
+    const beforeUpdate = probe.resolveVersion();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner).toHaveBeenCalledOnce();
+      probe.invalidateVersion();
+      expect(await probe.resolveVersion()).toBe("2.1.286");
+      if (outcome === "rejection") {
+        old.reject(new Error("obsolete probe failed"));
+      } else if (outcome === "timeout") {
+        await vi.advanceTimersByTimeAsync(1_500);
+      } else if (outcome === "command-failure") {
+        old.resolve(versionResult("obsolete command failed", { code: 1 }));
+      } else if (outcome === "unparseable-output") {
+        old.resolve(versionResult("obsolete unparseable output"));
+      } else {
+        old.resolve(versionResult("2.0.1 (Claude Code)"));
+      }
+      expect(await beforeUpdate).toBe("2.1.286");
+      expect(await probe.resolveVersion()).toBe("2.1.286");
+      expect(probe.supportsDynamicSystemPromptSections()).toBe(true);
+      expect(runner).toHaveBeenCalledTimes(2);
+      expect(subsystemLogMock.warn).not.toHaveBeenCalled();
+    } finally {
+      old.resolve(versionResult("2.0.1 (Claude Code)"));
+      await Promise.allSettled([beforeUpdate]);
+    }
+  },
+);

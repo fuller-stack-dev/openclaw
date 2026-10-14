@@ -126,9 +126,9 @@ it.each([
         pluginRegistry: registry,
         isCurrent: owner.isCurrent,
       });
-      const host = await catalog.evaluateEntry(entry);
+      const host = catalog.evaluateEntry(entry);
       expect(catalog.evaluateNative(entry, host).availability).toBe(false);
-      expect(await catalog.runtimeChoices(entry)).not.toContain("fixture-cli");
+      expect(catalog.runtimeChoices(entry)).not.toContain("fixture-cli");
 
       const choice = await prepareModelChoice({
         cfg: config,
