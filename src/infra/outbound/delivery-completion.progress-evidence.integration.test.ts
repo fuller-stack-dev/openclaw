@@ -23,7 +23,7 @@ import {
 
 let deliverOutboundPayloads: typeof import("./deliver.js").deliverOutboundPayloads;
 
-function receipt(): ChannelMessageSendResult {
+function receipt(): ChannelMessageSendResult & { messageId: string } {
   return {
     messageId: "m",
     receipt: {
