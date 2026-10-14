@@ -1,4 +1,4 @@
-import type { SessionAdmissionTransition } from "../../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { SessionAdmissionTransition } from "../../../config/sessions/session-admission-transition.types.js";
 import {
   runWithoutOwnedSessionTranscriptWrites,
   withOwnedSessionTranscriptWrites,

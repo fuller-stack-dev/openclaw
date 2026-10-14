@@ -7,7 +7,7 @@ import type {
 } from "../../audit/audit-event-types.js";
 import type { MessageReceipt, MessageReceiptSourceResult } from "../../channels/message/types.js";
 import type { ChannelId } from "../../channels/plugins/channel-id.types.js";
-import type { DeliveryPlacementEvidence } from "./delivery-placement-evidence.js";
+import type { DeliveryPlacementEvidence } from "./delivery-placement-evidence.types.js";
 
 export type OutboundDeliveryQueuePolicy = "required" | "best_effort";
 

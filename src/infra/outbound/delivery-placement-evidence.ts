@@ -1,13 +1,8 @@
 import { listMessageReceiptSourceTargets } from "../../channels/message/receipt.js";
 import type { OutboundDeliveryResult } from "./deliver-types.js";
+import type { DeliveryPlacementEvidence } from "./delivery-placement-evidence.types.js";
 
-/** Reported placement only: no payload, provider handles, or mutable receipt aliases. */
-export type DeliveryPlacementEvidence = Readonly<{
-  channels: readonly string[];
-  targets: readonly string[];
-  threads: readonly string[];
-  invalid: boolean;
-}>;
+export type { DeliveryPlacementEvidence } from "./delivery-placement-evidence.types.js";
 
 /** One logical payload retains every observation before adapter/user callbacks can mutate it. */
 export function createDeliveryPlacementEvidenceRecorder() {

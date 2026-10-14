@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { advanceHarnessCompletionClaim } from "../config/sessions/harness-completion-compaction.js";
-import type { SessionAdmissionTransition } from "../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { SessionAdmissionTransition } from "../config/sessions/session-admission-transition.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { freezeJsonSnapshot } from "../shared/immutable-data.js";
 

@@ -12,7 +12,7 @@ import {
   patchSessionEntryCore,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
-import type { SessionAdmissionTransition } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { SessionAdmissionTransition } from "../../config/sessions/session-admission-transition.types.js";
 import {
   readSessionEntryReadOnlyInWorker,
   readSessionEntrySummariesInWorker,

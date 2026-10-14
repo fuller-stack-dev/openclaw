@@ -6,7 +6,7 @@ import {
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
 import { getRestartRecoveryTerminalDeliveryEvidence } from "../config/sessions/restart-recovery-state.js";
-import type { SessionAdmissionTransition } from "../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { SessionAdmissionTransition } from "../config/sessions/session-admission-transition.types.js";
 import { recoverPendingDeliveries } from "../infra/outbound/delivery-queue-recovery.js";
 import {
   createRecoveryLog,

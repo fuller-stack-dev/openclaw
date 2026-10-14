@@ -1,5 +1,5 @@
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
-import type { SessionAdmissionTransition } from "../../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { SessionAdmissionTransition } from "../../../config/sessions/session-admission-transition.types.js";
 import type { SessionTranscriptTargetBinding } from "../../../config/sessions/transcript-target-binding.js";
 import type { InternalSessionEntry } from "../../../config/sessions/types.js";
 import type { Model } from "../../../llm/types.js";

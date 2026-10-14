@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { mergeRestartRecoveryTerminalDeliveryEvidence } from "./restart-recovery-state.js";
-import type { SessionActorDeliveryEvidence } from "./session-actor-contract.js";
+import type { SessionActorDeliveryEvidence } from "./session-actor-delivery-evidence.types.js";
 import { projectSessionEntryPatch } from "./session-entry-patch-operation.js";
 import type { InternalSessionEntry } from "./types.js";
 

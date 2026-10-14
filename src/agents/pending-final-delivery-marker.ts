@@ -19,8 +19,8 @@ import {
   mergeRestartRecoveryTerminalDeliveryEvidence,
 } from "../config/sessions/restart-recovery-state.js";
 import { applySessionEntryReplacements } from "../config/sessions/session-accessor.js";
-import type { SessionAdmissionTransition } from "../config/sessions/session-accessor.sqlite-entry-admission.js";
 import { resolveSqliteSessionKey } from "../config/sessions/session-accessor.sqlite-scope.js";
+import type { SessionAdmissionTransition } from "../config/sessions/session-admission-transition.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import type { DeliveryContext } from "../utils/delivery-context.shared.js";

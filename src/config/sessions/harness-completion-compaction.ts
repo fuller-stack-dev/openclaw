@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { HarnessCompletionRecovery } from "./restart-recovery-types.js";
-import type { SessionAdmissionTransition } from "./session-accessor.sqlite-entry-admission.js";
+import type { SessionAdmissionTransition } from "./session-admission-transition.types.js";
 import type { SessionEntry } from "./types.js";
 
 /** Only the requester incarnation advances; task, source and requester scope stay exact. */
