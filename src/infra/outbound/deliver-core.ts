@@ -396,11 +396,15 @@ export async function deliverOutboundPayloadsCore(
       }
 
       const deliveredResults = results.slice(beforeCount);
+      // Retained identities prove progress, not that every physical send succeeded.
+      // The recorder remembers discarded dispositions across this entire payload.
+      const incompleteReason = getSuppressionReason();
       if (deliveredResults.length > 0) {
         recordPayloadOutcome({
           index: payloadIndex,
           status: "sent",
           results: deliveredResults,
+          ...(incompleteReason ? { incompleteReason } : {}),
         });
         recordDeliveredPayload(mirroredPayload);
       } else {

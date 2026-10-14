@@ -367,6 +367,7 @@ function resolvePendingFinalResultEvidence(
           outcome.index < 0 ||
           outcome.index >= batch.payloadCount ||
           outcome.status !== "sent" ||
+          outcome.incompleteReason !== undefined ||
           !outcome.results.length ||
           !outcome.results.every(matches),
       )

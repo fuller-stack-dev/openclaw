@@ -96,7 +96,12 @@ describe("recovered requester receipt safety", () => {
         restartRecoveryDeliverySourceRunId: "source-b",
       }));
       // Reproduce updateSessionStoreAfterAgentRun's onCommitted publication: both live cache and row are B.
-      Object.assign(sessionStore[scope.sessionKey], loadSessionEntry(scope)!);
+      const cachedEntry = sessionStore[scope.sessionKey];
+      const refreshedEntry = loadSessionEntry(scope);
+      if (!cachedEntry || !refreshedEntry) {
+        throw new Error("missing cache-refresh fixture entry");
+      }
+      Object.assign(cachedEntry, refreshedEntry);
     }
     const payloads = options.payloads ?? [{ text: "final output" }];
     let marker;

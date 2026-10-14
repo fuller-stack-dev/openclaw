@@ -125,6 +125,8 @@ export type OutboundPayloadDeliveryOutcome =
       index: number;
       status: "sent";
       results: OutboundDeliveryResult[];
+      /** Identified progress exists, but at least one physical result was discarded. */
+      incompleteReason?: "adapter_returned_no_send" | "adapter_returned_no_identity";
       /** Effective post-hook, post-render payload kind. */
       deliveryKind?: OutboundPayloadDeliveryKind;
     }
