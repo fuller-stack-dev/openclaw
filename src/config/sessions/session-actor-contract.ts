@@ -107,7 +107,14 @@ export type SessionActorPendingFinalDelivery = NonNullable<SessionEntry["pending
 /** Already validated by the host; live authority is checked again at commit. */
 export type SessionActorDeliveryEvidence = {
   claim?: HarnessCompletionRecovery;
-  result?: { channel: string; target?: { id: string }; platformMessageId?: string };
+  result?: {
+    channel: string;
+    target?: { id: string };
+    platformMessageId?: string;
+    resultCount?: number;
+    /** Host validated every reported physical route against this exact captured context. */
+    verifiedContext?: import("../../utils/delivery-context.types.js").DeliveryContext;
+  };
 };
 
 export type SessionActorPhaseInputs = {

@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { getOwedHarnessCompletionTask } from "../../agents/agent-harness-completion-recovery.js";
-import { resolveMessageReceiptPrimaryId } from "../../channels/message/receipt.js";
+import {
+  listMessageReceiptSourceTargets,
+  resolveMessageReceiptPrimaryId,
+} from "../../channels/message/receipt.js";
 import {
   ConversationDeliveryMissingError,
   markConversationDeliveryQueued,
@@ -18,7 +21,10 @@ import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
-import type { SessionActorAuthority } from "../../config/sessions/session-actor-contract.js";
+import type {
+  SessionActorDeliveryEvidence,
+  SessionActorAuthority,
+} from "../../config/sessions/session-actor-contract.js";
 import {
   runSessionActorCommand,
   withSessionActor,
@@ -32,14 +38,26 @@ import {
   resolveOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
+import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import {
   resolveDeliveryQueueStateEnv,
   type DeliveryQueueStateContext,
 } from "../delivery-queue-sqlite.js";
 import { isGatewayExternallySupervised } from "../gateway-supervision.js";
 import { SqliteWorkerError } from "../sqlite-worker-contract.js";
-import type { OutboundDeliveryResult } from "./deliver-types.js";
+import {
+  countPhysicalOutboundSends,
+  type OutboundDeliveryResult,
+  type OutboundPayloadDeliveryOutcome,
+} from "./deliver-types.js";
 import type { DurableDeliveryCompletion } from "./delivery-queue-types.js";
+import { normalizeTargetForProvider } from "./target-normalization.js";
+
+type DeliveryEvidenceBatch = {
+  results: readonly OutboundDeliveryResult[];
+  payloadCount: number;
+  payloadOutcomes: readonly OutboundPayloadDeliveryOutcome[];
+};
 
 /** In-process locator captured before delivery preparation; never queue payload data. */
 export type ConversationDeliveryTarget = Pick<
@@ -138,6 +156,7 @@ export async function settlePendingFinalDelivery(
     preserveActivity?: boolean;
     stateContext?: DeliveryQueueStateContext;
     identifiedResult?: OutboundDeliveryResult;
+    batch?: DeliveryEvidenceBatch;
     /** Delivery has settled; durable queue owners must retain their receipt until ACK. */
     clearAfterSettled?: { recoveryRunId?: string };
   } = {},
@@ -201,20 +220,10 @@ export async function settlePendingFinalDelivery(
         authority.expectedWriterRunId === entry.activeWriterRunId) &&
       getOwedHarnessCompletionTask(claim, previous),
     );
-  const evidence =
-    claim || options.identifiedResult
-      ? {
-          ...(claim ? { claim } : {}),
-          result:
-            options.identifiedResult && options.identifiedResult.outcome !== "not_sent"
-              ? {
-                  channel: options.identifiedResult.channel,
-                  target: options.identifiedResult.target,
-                  platformMessageId: readPlatformMessageId(options.identifiedResult),
-                }
-              : undefined,
-        }
-      : undefined;
+  const evidence = (entry: SessionEntry | undefined): SessionActorDeliveryEvidence => ({
+    ...(claim ? { claim } : {}),
+    result: resolvePendingFinalResultEvidence(options, entry?.pendingFinalDelivery?.context),
+  });
   const live: SessionActorAuthority = {
     assertCurrent() {},
     authorize(stage, facts) {
@@ -230,18 +239,21 @@ export async function settlePendingFinalDelivery(
   await withSessionActor(scope, { assertCurrent() {}, assertReadable() {} }, async (actor) => {
     let outcome;
     try {
-      outcome = await runSessionActorCommand(actor, live, (snapshot) =>
-        actor.deliverySettled(
+      outcome = await runSessionActorCommand(actor, live, async (snapshot) => {
+        // A cold actor has no MAIN snapshot. Read its captured physical owner,
+        // then bind the route proof to that version (including on a stale retry).
+        const current = snapshot ?? (await actor.read(live));
+        return actor.deliverySettled(
           {
             commandId: randomUUID(),
             phaseId: randomUUID(),
-            expected: snapshot?.version,
+            expected: current.version,
             settlement,
-            ...(evidence ? { evidence } : {}),
+            evidence: evidence(current.entry),
           },
           live,
-        ),
-      );
+        );
+      });
     } catch (error) {
       // No command was accepted if its read's live authorization refused.
       if (refused) {
@@ -279,6 +291,98 @@ export async function settlePendingFinalDelivery(
     });
   }
   return { state: settled };
+}
+
+/** Keep contradictions until every physical send has been checked against captured routing. */
+function resolvePendingFinalResultEvidence(
+  options: { identifiedResult?: OutboundDeliveryResult; batch?: DeliveryEvidenceBatch },
+  context: DeliveryContext | undefined,
+): SessionActorDeliveryEvidence["result"] {
+  if (!context?.channel || !context.to || !options.identifiedResult) {
+    return undefined;
+  }
+  const expectedTarget = normalizeTargetForProvider(context.channel, context.to);
+  const matches = (result: OutboundDeliveryResult): boolean => {
+    if (
+      result.channel !== context.channel ||
+      result.outcome === "not_sent" ||
+      !readPlatformMessageId(result)
+    ) {
+      return false;
+    }
+    if (
+      listMessageReceiptSourceTargets(result).some(
+        (target) => normalizeTargetForProvider(context.channel!, target) !== expectedTarget,
+      )
+    ) {
+      return false;
+    }
+    const seen = new Set<object>();
+    const pending: unknown[] = [result];
+    for (const item of pending) {
+      if (!item || typeof item !== "object" || seen.has(item)) {
+        continue;
+      }
+      seen.add(item);
+      if (Array.isArray(item)) {
+        pending.push(...item);
+        continue;
+      }
+      // SAFETY: the traversal excluded null, primitives and arrays; only optional fields are read.
+      const record = item as Record<string, unknown>;
+      if (record.outcome === "not_sent") {
+        return false;
+      }
+      if (
+        record.threadId !== undefined &&
+        record.threadId !== null &&
+        ((typeof record.threadId !== "string" && typeof record.threadId !== "number") ||
+          String(record.threadId).trim() !== String(context.threadId ?? "").trim())
+      ) {
+        return false;
+      }
+      if (
+        Array.isArray(record.parts) &&
+        record.parts.some(
+          (part) =>
+            !part || typeof part.platformMessageId !== "string" || !part.platformMessageId.trim(),
+        )
+      ) {
+        return false;
+      }
+      pending.push(record.receipt, record.raw, record.parts);
+    }
+    return true;
+  };
+  const batch = options.batch;
+  const results = batch?.results ?? [options.identifiedResult];
+  if (batch) {
+    const indices = new Set(batch.payloadOutcomes.map((outcome) => outcome.index));
+    if (
+      batch.payloadCount < 1 ||
+      batch.payloadOutcomes.length !== batch.payloadCount ||
+      indices.size !== batch.payloadCount ||
+      batch.payloadOutcomes.some(
+        (outcome) =>
+          outcome.index < 0 ||
+          outcome.index >= batch.payloadCount ||
+          outcome.status !== "sent" ||
+          !outcome.results.length ||
+          !outcome.results.every(matches),
+      )
+    ) {
+      return undefined;
+    }
+  }
+  if (!results.length || !results.every(matches) || !matches(options.identifiedResult)) {
+    return undefined;
+  }
+  return {
+    channel: context.channel,
+    platformMessageId: readPlatformMessageId(options.identifiedResult),
+    resultCount: countPhysicalOutboundSends(results),
+    verifiedContext: structuredClone(context),
+  };
 }
 
 function readPlatformMessageId(result: OutboundDeliveryResult): string | undefined {
@@ -320,12 +424,13 @@ export async function completeDurableDelivery(
   stateDir?: string,
   stateContext?: DeliveryQueueStateContext,
   target?: ConversationDeliveryTarget,
+  batch?: DeliveryEvidenceBatch,
 ): Promise<DurableDeliveryCompletionResult> {
-  return settleDurableDelivery(completion, { result }, stateDir, stateContext, target);
+  return settleDurableDelivery(completion, { result, batch }, stateDir, stateContext, target);
 }
 
 type DurableDeliveryTerminalEvidence =
-  | { result: OutboundDeliveryResult }
+  | { result: OutboundDeliveryResult; batch?: DeliveryEvidenceBatch }
   | { rejectionError: string }
   | { platformSendStarted: boolean };
 
@@ -349,7 +454,9 @@ export async function settleDurableDelivery(
     ? await settlePendingFinalDelivery(completion, state, undefined, {
         stateDir,
         stateContext,
-        ...("result" in evidence ? { identifiedResult: evidence.result } : {}),
+        ...("result" in evidence
+          ? { identifiedResult: evidence.result, batch: evidence.batch }
+          : {}),
       })
     : conversationResult(
         completion,

@@ -36,6 +36,7 @@ import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compa
 import { buildMainSessionRecoverySettlementPatch } from "../main-session-recovery/main-session-recovery-clear.js";
 import { inspectMainSessionRecoveryLifecycleEvent } from "../main-session-recovery/main-session-recovery-lifecycle.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
+import type { PendingFinalRecoverySource } from "../pending-final-recovery-source.js";
 import type { AgentRunSessionTarget } from "../run-session-target.types.js";
 import {
   createAgentRunRestartAbortError,
@@ -66,6 +67,7 @@ type EmbeddedAgentAttempt = Awaited<ReturnType<typeof runEmbeddedAgentAttempt>>;
 const log = createSubsystemLogger("agents/agent-command");
 
 export async function finalizeEmbeddedAgentCommand(params: {
+  admittedRecoverySource: PendingFinalRecoverySource | undefined;
   prepared: PreparedAgentCommandExecution;
   opts: AgentCommandOpts;
   deps: CliDeps;
@@ -306,6 +308,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
 
     const payloads = result.payloads ?? [];
     const pendingFinalDeliveryMarker = await persistPendingFinalDeliveryMarker({
+      admittedRecoverySource: params.admittedRecoverySource,
       assertCurrent: () => {
         assertSourceCurrent?.();
         operatorAuthority?.assertCurrent();

@@ -22,8 +22,14 @@ import { resolveSqliteSessionKey } from "../config/sessions/session-accessor.sql
 import type { SessionEntry } from "../config/sessions/types.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import type { DeliveryContext } from "../utils/delivery-context.shared.js";
+import {
+  capturePendingFinalRecoverySource,
+  type PendingFinalRecoverySource,
+} from "./pending-final-recovery-source.js";
 
 type PersistPendingFinalDeliveryMarkerParams = {
+  /** Required by the command caller; omitted legacy callers cannot acknowledge a source. */
+  admittedRecoverySource?: PendingFinalRecoverySource;
   agentId: string;
   deliver: boolean;
   sessionStore?: Record<string, SessionEntry>;
@@ -85,9 +91,8 @@ export async function persistPendingFinalDeliveryMarker(
   const now = Date.now();
   const intentId = randomUUID();
   const deliveryId = randomUUID();
-  const harnessCompletion = entry.restartRecoveryHarnessCompletion
-    ? structuredClone(entry.restartRecoveryHarnessCompletion)
-    : undefined;
+  const admitted = params.admittedRecoverySource;
+  const harnessCompletion = admitted?.restartRecoveryHarnessCompletion;
   const persisted = await applySessionEntryReplacements<SessionEntry | undefined>({
     agentId: params.agentId,
     sessionKeys: [sessionKey],
@@ -99,6 +104,7 @@ export async function persistPendingFinalDeliveryMarker(
         !current ||
         current.sessionId !== params.runOwnedSessionId ||
         current.abortedLastRun === true ||
+        (admitted && !isDeepStrictEqual(capturePendingFinalRecoverySource(current), admitted)) ||
         (harnessCompletion &&
           (harnessCompletion.sessionId !== current.sessionId ||
             harnessCompletion.lifecycleRevision !== current.lifecycleRevision ||
@@ -110,8 +116,7 @@ export async function persistPendingFinalDeliveryMarker(
       // still own it. A later turn or changed channel cannot acknowledge this source.
       const sourceRunId =
         harnessCompletion?.sourceRunId ??
-        (current.restartRecoveryDeliveryRunId === entry.restartRecoveryDeliveryRunId &&
-        current.restartRecoveryDeliverySourceRunId === entry.restartRecoveryDeliverySourceRunId
+        (admitted
           ? getRestartRecoveryPendingFinalSourceRunId(current, params.deliveryContext)
           : undefined);
       const savedEvidence = harnessCompletion
@@ -181,8 +186,8 @@ export async function persistPendingFinalDeliveryMarker(
           agentId: params.agentId,
           deliveryId,
           intentId,
-          ...(entry.restartRecoveryDeliveryRunId
-            ? { recoveryRunId: entry.restartRecoveryDeliveryRunId }
+          ...(admitted?.restartRecoveryDeliveryRunId
+            ? { recoveryRunId: admitted.restartRecoveryDeliveryRunId }
             : {}),
           sessionId: params.runOwnedSessionId,
           sessionKey: params.sessionKey,

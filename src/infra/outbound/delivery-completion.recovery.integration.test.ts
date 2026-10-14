@@ -2,6 +2,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildMainSessionRecoverySettlementPatch } from "../../agents/main-session-recovery/main-session-recovery-clear.js";
 import { persistPendingFinalDeliveryMarker } from "../../agents/pending-final-delivery-marker.js";
+import { capturePendingFinalRecoverySource } from "../../agents/pending-final-recovery-source.js";
 import { resolveRequesterRecoveryDelivery } from "../../agents/subagents/announce/subagent-announce-completion-delivery.js";
 import { createDirectAnnounceResponseClassifier } from "../../agents/subagents/announce/subagent-announce-direct-response.js";
 import { setReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
@@ -89,6 +90,7 @@ describe("recovered requester final receipts", () => {
       const payloads = [payload];
       if (producer === "command") {
         await persistPendingFinalDeliveryMarker({
+          admittedRecoverySource: capturePendingFinalRecoverySource(entry),
           ...scope,
           deliver: true,
           sessionStore: { [scope.sessionKey]: entry },
@@ -254,6 +256,7 @@ describe("recovered requester final receipts", () => {
     }
     const payloads = [{ text: "The final result." }];
     await persistPendingFinalDeliveryMarker({
+      admittedRecoverySource: capturePendingFinalRecoverySource(entry),
       ...scope,
       deliver: true,
       sessionStore: { [scope.sessionKey]: entry },
@@ -265,7 +268,7 @@ describe("recovered requester final receipts", () => {
       runOwnedSessionId: entry.sessionId,
     });
     const completion = resolvePendingFinalDeliveryCompletion(payloads);
-    if (!completion) {
+    if (!completion && !options.replaceSourceBeforeCapture) {
       throw new Error("Expected final custody");
     }
     return { scope, context, sourceRunId, completion };
@@ -283,6 +286,9 @@ describe("recovered requester final receipts", () => {
     "intent-replaced",
   ] as const)("does not acknowledge the original source after %s", async (condition) => {
     const { scope, context, sourceRunId, completion } = await prepareFinal();
+    if (!completion) {
+      throw new Error("Expected final custody");
+    }
     const result: OutboundDeliveryResult = {
       channel: "matrix",
       messageId: "provider-id",
@@ -354,6 +360,15 @@ describe("recovered requester final receipts", () => {
         replaceSourceBeforeCapture: mismatch === "source",
       });
       expect(loadSessionEntry(scope)?.pendingFinalDelivery?.sourceRunId).toBeUndefined();
+      if (mismatch === "source") {
+        expect(completion).toBeUndefined();
+        expect(loadSessionEntry(scope)?.pendingFinalDelivery).toBeUndefined();
+        expect(loadSessionEntry(scope)?.restartRecoveryDeliverySourceRunId).toBe("later-source");
+        return;
+      }
+      if (!completion) {
+        throw new Error("Expected final custody");
+      }
       await settlePendingFinalDelivery(completion, "delivered", undefined, {
         identifiedResult: { channel: captureContext.channel, messageId: "sent-elsewhere" },
       });
@@ -361,14 +376,14 @@ describe("recovered requester final receipts", () => {
       const after = loadSessionEntry(scope);
       expect(getRestartRecoveryTerminalDeliveryEvidence(after, sourceRunId)).toBeUndefined();
       expect(getRestartRecoveryTerminalDeliveryEvidence(after, "later-source")).toBeUndefined();
-      if (mismatch === "source") {
-        expect(after?.restartRecoveryDeliverySourceRunId).toBe("later-source");
-      }
     },
   );
 
   it("waits for every final payload before retaining a receipt and preserves a newer claim", async () => {
     const { scope, sourceRunId, context, completion } = await prepareFinal();
+    if (!completion) {
+      throw new Error("Expected final custody");
+    }
     await patchSessionEntryCore(scope, (entry) => ({
       pendingFinalDelivery: {
         ...entry.pendingFinalDelivery!,
@@ -392,12 +407,18 @@ describe("recovered requester final receipts", () => {
     expect(
       getRestartRecoveryTerminalDeliveryEvidence(loadSessionEntry(scope), sourceRunId),
     ).toBeUndefined();
+    expect(loadSessionEntry(scope)?.pendingFinalDelivery?.deliveries?.[0]?.receipt).toMatchObject({
+      platformMessageId: "first-provider-id",
+    });
     await settlePendingFinalDelivery(
       { ...completion, deliveryId: "second-payload" },
       "delivered",
       undefined,
       { identifiedResult: { ...result, messageId: "second-provider-id" } },
     );
+    expect(loadSessionEntry(scope)?.pendingFinalDelivery?.deliveries?.[1]?.receipt).toMatchObject({
+      platformMessageId: "second-provider-id",
+    });
     await clearPendingFinalDeliveryAfterSuccess(completion);
     await closeOpenClawAgentDatabasesAsync(tmpDir);
     const after = loadSessionEntry(scope);

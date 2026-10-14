@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { persistPendingFinalDeliveryMarker } from "./pending-final-delivery-marker.js";
+import { capturePendingFinalRecoverySource } from "./pending-final-recovery-source.js";
 
 const state = vi.hoisted(() => ({ applySessionEntryReplacements: vi.fn() }));
 
@@ -31,6 +32,7 @@ describe("persistPendingFinalDeliveryMarker", () => {
     ];
 
     const result = await persistPendingFinalDeliveryMarker({
+      admittedRecoverySource: capturePendingFinalRecoverySource(entry),
       agentId: "main",
       deliver: true,
       sessionStore: { main: entry },
