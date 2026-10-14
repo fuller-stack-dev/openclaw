@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { advanceHarnessCompletionClaim } from "../config/sessions/harness-completion-compaction.js";
 import type { SessionAdmissionTransition } from "../config/sessions/session-accessor.sqlite-entry-admission.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { freezeJsonSnapshot } from "../shared/immutable-data.js";
@@ -35,25 +36,45 @@ export function capturePendingFinalRecoverySource(
 }
 
 /** Advance only identity, through the exact committed chain; original source/route stay frozen. */
-export function matchesPendingFinalRecoverySource(
-  current: SessionEntry,
+export function advancePendingFinalRecoverySource(
   admitted: PendingFinalRecoverySource,
   transitions: readonly SessionAdmissionTransition[] = [],
-): boolean {
-  let { sessionId, lifecycleRevision } = admitted;
+): PendingFinalRecoverySource | undefined {
+  let { sessionId, lifecycleRevision, restartRecoveryHarnessCompletion } = admitted;
   for (const transition of transitions) {
     if (
       !transition.previous ||
       transition.previous.sessionId !== sessionId ||
       transition.previous.lifecycleRevision !== lifecycleRevision
     ) {
-      return false;
+      return undefined;
+    }
+    if (restartRecoveryHarnessCompletion) {
+      restartRecoveryHarnessCompletion = advanceHarnessCompletionClaim(
+        restartRecoveryHarnessCompletion,
+        transition,
+      );
+      if (!restartRecoveryHarnessCompletion) {
+        return undefined;
+      }
     }
     ({ sessionId, lifecycleRevision } = transition.current);
   }
-  return isDeepStrictEqual(capturePendingFinalRecoverySource(current), {
+  return {
     ...admitted,
     sessionId,
     lifecycleRevision,
-  });
+    restartRecoveryHarnessCompletion,
+  };
+}
+
+export function matchesPendingFinalRecoverySource(
+  current: SessionEntry,
+  admitted: PendingFinalRecoverySource,
+  transitions: readonly SessionAdmissionTransition[] = [],
+): boolean {
+  return isDeepStrictEqual(
+    capturePendingFinalRecoverySource(current),
+    advancePendingFinalRecoverySource(admitted, transitions),
+  );
 }

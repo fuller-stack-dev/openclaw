@@ -3,6 +3,7 @@ import type { OutboundDeliveryResult } from "./deliver-types.js";
 
 /** Reported placement only: no payload, provider handles, or mutable receipt aliases. */
 export type DeliveryPlacementEvidence = Readonly<{
+  channels: readonly string[];
   targets: readonly string[];
   threads: readonly string[];
   invalid: boolean;
@@ -10,6 +11,7 @@ export type DeliveryPlacementEvidence = Readonly<{
 
 /** One logical payload retains every observation before adapter/user callbacks can mutate it. */
 export function createDeliveryPlacementEvidenceRecorder() {
+  const channels = new Set<string>();
   const targets = new Set<string>();
   const threads = new Set<string>();
   let invalid = false;
@@ -32,6 +34,25 @@ export function createDeliveryPlacementEvidenceRecorder() {
         // SAFETY: only optional receipt fields are read after excluding primitives and arrays.
         const record = item as Record<string, unknown>;
         invalid ||= record.outcome === "not_sent";
+        if (record.channel !== undefined) {
+          if (typeof record.channel === "string") {
+            if (record.channel.trim()) {
+              channels.add(record.channel.trim());
+            }
+          } else {
+            invalid = true;
+          }
+        }
+        if (Array.isArray(record.sourceResults)) {
+          for (const source of record.sourceResults) {
+            invalid ||=
+              !source ||
+              source.outcome === "not_sent" ||
+              typeof source.messageId !== "string" ||
+              !source.messageId.trim();
+          }
+          pending.push(...record.sourceResults);
+        }
         if (record.threadId !== undefined && record.threadId !== null) {
           if (typeof record.threadId === "string" || typeof record.threadId === "number") {
             threads.add(String(record.threadId).trim());
@@ -50,6 +71,7 @@ export function createDeliveryPlacementEvidenceRecorder() {
     },
     snapshot(): DeliveryPlacementEvidence {
       return Object.freeze({
+        channels: Object.freeze([...channels]),
         targets: Object.freeze([...targets]),
         threads: Object.freeze([...threads]),
         invalid,

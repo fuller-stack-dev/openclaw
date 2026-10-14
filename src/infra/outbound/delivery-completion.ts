@@ -306,6 +306,7 @@ function resolvePendingFinalResultEvidence(
   const matchesPlacement = (placement: DeliveryPlacementEvidence | undefined): boolean =>
     !placement ||
     (!placement.invalid &&
+      placement.channels.every((channel) => channel === context.channel) &&
       placement.targets.every(
         (target) => normalizeTargetForProvider(context.channel!, target) === expectedTarget,
       ) &&

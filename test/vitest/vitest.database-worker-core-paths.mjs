@@ -192,6 +192,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/bash-tools.visible-subagent-notify.test.ts",
   "src/agents/agent-command.compaction-rotation.test.ts",
   "src/agents/agent-command.compaction-custody.test.ts",
+  "src/agents/agent-command.harness-compaction-custody.test.ts",
   "src/agents/agent-command.live-model-switch.test.ts",
   "src/agents/agent-command.embedded-maintenance.test.ts",
   "src/agents/agent-command.restart-settlement.test.ts",

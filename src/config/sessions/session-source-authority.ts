@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { throwSqliteLifecycleErrors } from "../../infra/sqlite-lifecycle-errors.js";
+import type { SessionAdmissionTransition } from "./session-accessor.sqlite-entry-admission.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-authority.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
@@ -74,6 +75,11 @@ export type PreparedSessionSourceAuthority = {
 export type SessionSourceAssertion = (() => void) & {
   nativeSource?: boolean;
   opaqueCommitGuard?: boolean;
+  /** Host commit notification only; never a substitute for the normal source checks. */
+  onSessionCompactionCommitted?: (
+    transition: SessionAdmissionTransition,
+    entry: SessionEntry,
+  ) => void;
   /** Keep the source owner alive through accepted work that outlasts its request. */
   retain?: () => () => void;
   /** Checks the scope owner without invoking storage-dependent source predicates. */
@@ -247,6 +253,8 @@ export function createDynamicSessionSourceAssertion(
       return scoped ? scoped.assertCurrent() : select()?.();
     },
     {
+      onSessionCompactionCommitted: (transition: SessionAdmissionTransition, entry: SessionEntry) =>
+        select()?.onSessionCompactionCommitted?.(transition, entry),
       prepareSessionSource: () => prepareSelected(prepareSessionSourceAuthority),
       prepareSessionSourceScope: () => prepareSelected(prepareSessionSourceScope),
     },
@@ -346,6 +354,14 @@ export function composeSessionSourceAssertion(
       return scoped ? scoped.assertCurrent() : check(() => sources.forEach((source) => source?.()));
     },
     {
+      onSessionCompactionCommitted: (
+        transition: SessionAdmissionTransition,
+        entry: SessionEntry,
+      ) => {
+        for (const source of new Set(sources)) {
+          source?.onSessionCompactionCommitted?.(transition, entry);
+        }
+      },
       prepareSessionSource: () => prepare(),
       prepareSessionSourceScope: () => prepare(true),
     },

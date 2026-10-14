@@ -450,11 +450,12 @@ export async function finalizeEmbeddedAgentCommand(params: {
           accepted.previousSessionId === undefined ? undefined : accepted.sessionId,
         );
       };
-      const assertActive = () => {
+      const assertActive = composeSessionSourceAssertion([assertSourceCurrent], (assertSources) => {
+        assertSources();
         if (!authorize()) {
           throw new Error("Command compaction is no longer active");
         }
-      };
+      });
       try {
         if (maintenance.remainingMs() > 0) {
           const { runCliTurnCompactionLifecycle } = await loadCliCompactionRuntime();

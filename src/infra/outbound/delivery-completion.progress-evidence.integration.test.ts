@@ -3,12 +3,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { persistPendingFinalDeliveryMarker } from "../../agents/pending-final-delivery-marker.js";
 import { capturePendingFinalRecoverySource } from "../../agents/pending-final-recovery-source.js";
 import { resolvePendingFinalDeliveryCompletion } from "../../auto-reply/reply/pending-final-delivery.js";
+import { createMessageReceiptFromOutboundResults } from "../../channels/message/receipt.js";
 import type { ChannelMessageSendResult } from "../../channels/message/types.js";
+import type { ChannelOutboundContext } from "../../channels/plugins/outbound.types.js";
 import { getRestartRecoveryTerminalDeliveryEvidence } from "../../config/sessions/restart-recovery-state.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
+import type { OutboundDeliveryResult } from "./deliver-types.js";
 import { matrixOutboundForQueueTest } from "./deliver.queue-integration.test-support.js";
 import { recoverPendingDeliveries } from "./delivery-queue-recovery.js";
 import { enqueueDeliveryOnce } from "./delivery-queue-storage.js";
@@ -61,6 +64,16 @@ describe("final receipt reported progress evidence", () => {
           "nested-thread",
           "mutated-target",
           "callback-mutation",
+          "aggregate-blank-first",
+          "aggregate-blank-last",
+          "aggregate-nested",
+          "aggregate-mutated-raw",
+          "aggregate-not-sent",
+          "aggregate-complete",
+          "aggregate-metadata",
+          "legacy-channel",
+          "legacy-expected",
+          "legacy-omitted",
         ] as const
       ).map((placement) => ({ mode, placement })),
     ),
@@ -134,6 +147,35 @@ describe("final receipt reported progress evidence", () => {
             progress.target!.id = context.to;
           }
           const final = receipt();
+          if (placement.startsWith("aggregate-")) {
+            const unconfirmed = { messageId: "" };
+            const identified = { messageId: "m" };
+            const nested = createMessageReceiptFromOutboundResults({
+              results: [unconfirmed, identified],
+            });
+            final.receipt = createMessageReceiptFromOutboundResults({
+              results:
+                placement === "aggregate-blank-first"
+                  ? [unconfirmed, identified]
+                  : placement === "aggregate-blank-last"
+                    ? [identified, unconfirmed]
+                    : ["aggregate-nested", "aggregate-mutated-raw"].includes(placement)
+                      ? [{ receipt: nested }, identified]
+                      : placement === "aggregate-not-sent"
+                        ? [{ outcome: "not_sent" }, identified]
+                        : placement === "aggregate-complete"
+                          ? [{ messageId: "first" }, identified]
+                          : [
+                              {
+                                ...identified,
+                                receipt: { ...receipt().receipt, raw: [{ roomId: context.to }] },
+                              },
+                            ],
+            });
+            if (placement === "aggregate-mutated-raw") {
+              unconfirmed.messageId = "m";
+            }
+          }
           if (placement === "enriched") {
             final.target = { kind: "room", id: context.to };
             final.receipt.threadId = context.threadId;
@@ -146,10 +188,27 @@ describe("final receipt reported progress evidence", () => {
         outbound: matrixOutboundForQueueTest,
         messaging: { normalizeTarget: (raw) => raw.replace(/^matrix:/, "") },
       });
-      plugin.message = {
-        send: { text: send, lifecycle: { afterCommit: committed } },
-        durableFinal: { capabilities: { text: true, thread: true, afterCommit: true } },
-      };
+      const legacy = placement.startsWith("legacy-");
+      const legacySend = vi.fn(async (ctx: ChannelOutboundContext) => {
+        const result: OutboundDeliveryResult = {
+          ...receipt(),
+          channel: placement === "legacy-channel" ? "discord" : "matrix",
+        };
+        if (placement === "legacy-omitted") {
+          // Legacy progress may omit the normalized receipt and optional placement.
+          delete result.receipt;
+        }
+        await ctx.onDeliveryResult?.(result);
+        return { ...receipt(), channel: "matrix" };
+      });
+      if (legacy) {
+        plugin.outbound = { ...matrixOutboundForQueueTest, sendText: legacySend };
+      } else {
+        plugin.message = {
+          send: { text: send, lifecycle: { afterCommit: committed } },
+          durableFinal: { capabilities: { text: true, thread: true, afterCommit: true } },
+        };
+      }
       setActivePluginRegistry(createTestRegistry([{ pluginId: "matrix", source: "test", plugin }]));
       const seen: string[] = [];
       const runDelivery: typeof deliverOutboundPayloads = (params) =>
@@ -157,6 +216,9 @@ describe("final receipt reported progress evidence", () => {
           ...params,
           onDeliveryResult: async (result) => {
             seen.push(result.messageId);
+            if (placement === "legacy-channel") {
+              result.channel = "matrix";
+            }
             if (placement === "callback-mutation" && result.target) {
               result.target.id = context.to;
             }
@@ -188,18 +250,34 @@ describe("final receipt reported progress evidence", () => {
         loadSessionEntry(scope),
         "source",
       );
-      if (placement === "omitted" || placement === "normalized" || placement === "enriched") {
+      if (
+        [
+          "omitted",
+          "normalized",
+          "enriched",
+          "aggregate-complete",
+          "aggregate-metadata",
+          "legacy-expected",
+          "legacy-omitted",
+        ].includes(placement)
+      ) {
         expect(evidence).toMatchObject({
-          deliveryStatus: { status: "sent", resultCount: 1 },
-          durableFinalReceipt: { platformMessageId: "m" },
+          deliveryStatus: {
+            status: "sent",
+            resultCount: placement === "aggregate-complete" ? 2 : 1,
+          },
+          durableFinalReceipt: {
+            platformMessageId: placement === "aggregate-complete" ? "first" : "m",
+          },
         });
       } else {
         expect(evidence).toBeUndefined();
       }
       expect(seen).toEqual(["m"]);
-      expect(committed).toHaveBeenCalledOnce();
+      expect(committed).toHaveBeenCalledTimes(legacy ? 0 : 1);
       await recover();
-      expect(send).toHaveBeenCalledOnce();
+      expect(send).toHaveBeenCalledTimes(legacy ? 0 : 1);
+      expect(legacySend).toHaveBeenCalledTimes(legacy ? 1 : 0);
       expect(await loadPendingDeliveries(tmpDir)).toEqual([]);
     },
   );

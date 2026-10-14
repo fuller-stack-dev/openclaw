@@ -12,6 +12,7 @@ import {
   normalizePendingFinalDeliveryPayloads,
   normalizePendingFinalRecoveryPayloads,
 } from "../auto-reply/reply/pending-final-delivery.js";
+import { advanceHarnessCompletionClaim } from "../config/sessions/harness-completion-compaction.js";
 import {
   getRestartRecoveryPendingFinalSourceRunId,
   getRestartRecoveryTerminalDeliveryEvidence,
@@ -24,6 +25,7 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import type { DeliveryContext } from "../utils/delivery-context.shared.js";
 import {
+  advancePendingFinalRecoverySource,
   matchesPendingFinalRecoverySource,
   type PendingFinalRecoverySource,
 } from "./pending-final-recovery-source.js";
@@ -94,7 +96,10 @@ export async function persistPendingFinalDeliveryMarker(
   const intentId = randomUUID();
   const deliveryId = randomUUID();
   const admitted = params.admittedRecoverySource;
-  const harnessCompletion = admitted?.restartRecoveryHarnessCompletion;
+  const harnessCompletion = admitted
+    ? advancePendingFinalRecoverySource(admitted, params.compactionTransitions)
+        ?.restartRecoveryHarnessCompletion
+    : undefined;
   const persisted = await applySessionEntryReplacements<SessionEntry | undefined>({
     agentId: params.agentId,
     sessionKeys: [sessionKey],
@@ -225,7 +230,8 @@ export function advancePendingFinalDeliveryCompletion(params: {
     return;
   }
   for (const payload of params.payloads) {
-    const completion = getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion;
+    const metadata = getReplyPayloadMetadata(payload);
+    const completion = metadata?.pendingFinalDeliveryCompletion;
     if (
       completion?.sessionId === transition.previous.sessionId &&
       completion.intentId === params.intentId &&
@@ -234,7 +240,25 @@ export function advancePendingFinalDeliveryCompletion(params: {
         (delivery) => delivery.id === completion.deliveryId,
       )
     ) {
+      const authority = metadata?.sessionWriterDeliveryAuthority;
+      const claim = advanceHarnessCompletionClaim(authority?.harnessCompletion, transition);
+      if (
+        authority?.harnessCompletion &&
+        (!claim || !isDeepStrictEqual(entry.restartRecoveryHarnessCompletion, claim))
+      ) {
+        continue;
+      }
       setReplyPayloadMetadata(payload, {
+        ...(claim && authority
+          ? {
+              sessionWriterDeliveryAuthority: {
+                ...authority,
+                expectedSessionId: transition.current.sessionId,
+                expectedLifecycleRevision: transition.current.lifecycleRevision,
+                harnessCompletion: claim,
+              },
+            }
+          : {}),
         pendingFinalDeliveryCompletion: { ...completion, sessionId: transition.current.sessionId },
       });
     }

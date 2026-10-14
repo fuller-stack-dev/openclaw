@@ -76,11 +76,13 @@ describe("delivery result reconciliation", () => {
     expect(results[0]).toBe(final);
     expect(onDeliveryResult).toHaveBeenCalledOnce();
     expect(first).toEqual({
+      channels: ["matrix"],
       targets: ["reported-room"],
       threads: ["reported-thread"],
       invalid: false,
     });
     expect(recorder.getReportedPlacement()).toEqual(first);
+    expect(Object.isFrozen(first.channels)).toBe(true);
     expect(Object.isFrozen(first.targets)).toBe(true);
     recorder.resetPayloadResults();
     await recorder.reportIdentifiedDeliveryResult({
@@ -89,6 +91,7 @@ describe("delivery result reconciliation", () => {
       target: { kind: "room", id: "next-room" },
     });
     expect(recorder.getReportedPlacement()).toEqual({
+      channels: ["matrix"],
       targets: ["next-room"],
       threads: [],
       invalid: false,
