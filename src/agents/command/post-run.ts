@@ -35,7 +35,10 @@ import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compaction-successor.js";
 import { buildMainSessionRecoverySettlementPatch } from "../main-session-recovery/main-session-recovery-clear.js";
 import { inspectMainSessionRecoveryLifecycleEvent } from "../main-session-recovery/main-session-recovery-lifecycle.js";
-import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
+import {
+  advancePendingFinalDeliveryCompletion,
+  persistPendingFinalDeliveryMarker,
+} from "../pending-final-delivery-marker.js";
 import type { PendingFinalRecoverySource } from "../pending-final-recovery-source.js";
 import type { AgentRunSessionTarget } from "../run-session-target.types.js";
 import {
@@ -309,6 +312,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
     const payloads = result.payloads ?? [];
     const pendingFinalDeliveryMarker = await persistPendingFinalDeliveryMarker({
       admittedRecoverySource: params.admittedRecoverySource,
+      compactionTransitions: compactionFact?.admissionTransitions,
       assertCurrent: () => {
         assertSourceCurrent?.();
         operatorAuthority?.assertCurrent();
@@ -432,6 +436,12 @@ export async function finalizeEmbeddedAgentCommand(params: {
         );
       };
       const onCommitted = (accepted: AcceptedCompactionSuccessor) => {
+        advancePendingFinalDeliveryCompletion({
+          payloads,
+          intentId: pendingFinalDeliveryMarker.pendingFinalDeliveryIntentId,
+          transition: accepted.admissionTransition,
+          entry: accepted.entry,
+        });
         sessionEntry = accepted.entry;
         maintenanceLifecycleRevision = accepted.entry.lifecycleRevision;
         deliveryLifecycleRevision = accepted.entry.lifecycleRevision;

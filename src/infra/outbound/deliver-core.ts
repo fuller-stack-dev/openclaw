@@ -65,6 +65,7 @@ export async function deliverOutboundPayloadsCore(
     recordIdentifiedDeliveryResults,
     reportIdentifiedDeliveryResult,
     getSuppressionReason,
+    getReportedPlacement,
     resetPayloadResults,
   } = createDeliveryResultRecorder({
     results,
@@ -405,6 +406,7 @@ export async function deliverOutboundPayloadsCore(
           status: "sent",
           results: deliveredResults,
           ...(incompleteReason ? { incompleteReason } : {}),
+          reportedPlacement: getReportedPlacement(),
         });
         recordDeliveredPayload(mirroredPayload);
       } else {

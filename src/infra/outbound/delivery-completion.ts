@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getOwedHarnessCompletionTask } from "../../agents/agent-harness-completion-recovery.js";
-import {
-  listMessageReceiptSourceTargets,
-  resolveMessageReceiptPrimaryId,
-} from "../../channels/message/receipt.js";
+import { resolveMessageReceiptPrimaryId } from "../../channels/message/receipt.js";
 import {
   ConversationDeliveryMissingError,
   markConversationDeliveryQueued,
@@ -50,6 +47,10 @@ import {
   type OutboundDeliveryResult,
   type OutboundPayloadDeliveryOutcome,
 } from "./deliver-types.js";
+import {
+  captureDeliveryPlacementEvidence,
+  type DeliveryPlacementEvidence,
+} from "./delivery-placement-evidence.js";
 import type { DurableDeliveryCompletion } from "./delivery-queue-types.js";
 import { normalizeTargetForProvider } from "./target-normalization.js";
 
@@ -240,16 +241,16 @@ export async function settlePendingFinalDelivery(
     let outcome;
     try {
       outcome = await runSessionActorCommand(actor, live, async (snapshot) => {
-        // A cold actor has no MAIN snapshot. Read its captured physical owner,
-        // then bind the route proof to that version (including on a stale retry).
-        const current = snapshot ?? (await actor.read(live));
+        // Only receipt evidence needs a captured route/version. State-only custody
+        // changes validate atomically in deliverySettled without a preparatory read.
+        const current = snapshot ?? (options.identifiedResult ? await actor.read(live) : undefined);
         return actor.deliverySettled(
           {
             commandId: randomUUID(),
             phaseId: randomUUID(),
-            expected: current.version,
+            expected: current?.version,
             settlement,
-            evidence: evidence(current.entry),
+            evidence: evidence(current?.entry),
           },
           live,
         );
@@ -302,58 +303,18 @@ function resolvePendingFinalResultEvidence(
     return undefined;
   }
   const expectedTarget = normalizeTargetForProvider(context.channel, context.to);
-  const matches = (result: OutboundDeliveryResult): boolean => {
-    if (
-      result.channel !== context.channel ||
-      result.outcome === "not_sent" ||
-      !readPlatformMessageId(result)
-    ) {
-      return false;
-    }
-    if (
-      listMessageReceiptSourceTargets(result).some(
-        (target) => normalizeTargetForProvider(context.channel!, target) !== expectedTarget,
-      )
-    ) {
-      return false;
-    }
-    const seen = new Set<object>();
-    const pending: unknown[] = [result];
-    for (const item of pending) {
-      if (!item || typeof item !== "object" || seen.has(item)) {
-        continue;
-      }
-      seen.add(item);
-      if (Array.isArray(item)) {
-        pending.push(...item);
-        continue;
-      }
-      // SAFETY: the traversal excluded null, primitives and arrays; only optional fields are read.
-      const record = item as Record<string, unknown>;
-      if (record.outcome === "not_sent") {
-        return false;
-      }
-      if (
-        record.threadId !== undefined &&
-        record.threadId !== null &&
-        ((typeof record.threadId !== "string" && typeof record.threadId !== "number") ||
-          String(record.threadId).trim() !== String(context.threadId ?? "").trim())
-      ) {
-        return false;
-      }
-      if (
-        Array.isArray(record.parts) &&
-        record.parts.some(
-          (part) =>
-            !part || typeof part.platformMessageId !== "string" || !part.platformMessageId.trim(),
-        )
-      ) {
-        return false;
-      }
-      pending.push(record.receipt, record.raw, record.parts);
-    }
-    return true;
-  };
+  const matchesPlacement = (placement: DeliveryPlacementEvidence | undefined): boolean =>
+    !placement ||
+    (!placement.invalid &&
+      placement.targets.every(
+        (target) => normalizeTargetForProvider(context.channel!, target) === expectedTarget,
+      ) &&
+      placement.threads.every((thread) => thread === String(context.threadId ?? "").trim()));
+  const matches = (result: OutboundDeliveryResult): boolean =>
+    result.channel === context.channel &&
+    result.outcome !== "not_sent" &&
+    Boolean(readPlatformMessageId(result)) &&
+    matchesPlacement(captureDeliveryPlacementEvidence(result));
   const batch = options.batch;
   const results = batch?.results ?? [options.identifiedResult];
   if (batch) {
@@ -368,6 +329,7 @@ function resolvePendingFinalResultEvidence(
           outcome.index >= batch.payloadCount ||
           outcome.status !== "sent" ||
           outcome.incompleteReason !== undefined ||
+          !matchesPlacement(outcome.reportedPlacement) ||
           !outcome.results.length ||
           !outcome.results.every(matches),
       )
