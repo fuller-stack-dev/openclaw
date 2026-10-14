@@ -99,7 +99,7 @@ export function createPreparedCliModelCatalogAccess(
       assertCurrent: () => void;
       refresh: boolean;
       load: (refreshResponses: boolean) => Promise<T>;
-    }): Promise<T> {
+    }): Promise<{ catalog: T; runtimeChanged: boolean }> {
       const request = options.cliCompatibilityRefresh;
       // Cancelling this reader must not cancel the shared renewal it was waiting for.
       await racePromiseWithAbortSignal(pending ?? Promise.resolve(false), request?.signal);
@@ -119,16 +119,17 @@ export function createPreparedCliModelCatalogAccess(
           : "discovery";
       // The native CLI menu describes the installed binary. Finish known repairs before
       // discovery so a successful manual retry publishes the upgraded menu in this response.
-      await prepareForRequest(catalog, options, assertCurrent, reason);
-      let discovered = await load(refresh);
+      let runtimeChanged = await prepareForRequest(catalog, options, assertCurrent, reason);
+      let discovered = await load(refresh || runtimeChanged);
       assertCurrent();
       // Newly discovered rows can introduce another requirement. Never publish a menu
       // captured before that repair; each backend retains cooldowns after its first attempt.
       while (await prepareForRequest(discovered.modelCatalog, options, assertCurrent, reason)) {
+        runtimeChanged = true;
         discovered = await load(true);
         assertCurrent();
       }
-      return discovered;
+      return { catalog: discovered, runtimeChanged };
     },
     attach(catalog: ModelCatalogSnapshot) {
       if (compatibility) {
@@ -142,7 +143,7 @@ export function createPreparedCliModelCatalogAccess(
       recheckNativeLogin: () => void;
       readInventory: () => PreparedModelCatalogInventory | undefined;
       readCatalog: () => ModelCatalogSnapshot;
-      acquire: (providerIds?: readonly string[]) => Promise<unknown>;
+      acquire: (providerIds?: readonly string[], runtimeChanged?: boolean) => Promise<unknown>;
       publish: () => void | Promise<void>;
       failed: (error: unknown) => void;
     }) {
@@ -183,7 +184,7 @@ export function createPreparedCliModelCatalogAccess(
               pending = undefined;
             }
             if (runtimeChanged) {
-              await options.acquire();
+              await options.acquire(undefined, true);
             } else {
               await options.publish();
             }

@@ -355,27 +355,29 @@ export async function updateClaudeInstallation(
     true,
   );
   assertCurrent(context);
-  if (!commandSucceeded(result)) {
-    return {
-      status: "failed",
-      reason: "update-failed",
-      message:
-        "Claude's installer did not complete successfully. Update its installation manually, then refresh models.",
-    };
-  }
+  // A nonzero installer can still replace its launcher. Verify the post-state
+  // before executing it, then preserve any safely observed older version.
   const next = await detectClaudeInstallation(context);
-  const version = await probeClaudeVersion(context);
   if (
     next.status !== "supported" ||
     next.installation.key !== expected.key ||
-    next.installation.stableCommand !== expected.stableCommand ||
-    !version
+    next.installation.stableCommand !== expected.stableCommand
   ) {
     return {
       status: "failed",
       reason: "verification-failed",
       message:
         "Claude's updated launcher could not be verified. Repair the selected installation, then refresh models.",
+    };
+  }
+  const version = await probeClaudeVersion(context);
+  if (!commandSucceeded(result) || !version) {
+    return {
+      status: "failed",
+      reason: "update-failed",
+      verifiedVersion: version,
+      message:
+        "Claude's installer did not complete successfully. Update its installation manually, then refresh models.",
     };
   }
   return { status: "updated", installation: next.installation, version };

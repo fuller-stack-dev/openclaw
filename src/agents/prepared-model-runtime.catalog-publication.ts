@@ -56,6 +56,37 @@ export function createPreparedModelCatalogPublication(params: {
   };
 }
 
+/** Merge each discovery owner's result with the currently published counterpart. */
+export function mergePreparedCatalogPublicationInventory(
+  candidate: PreparedModelCatalogInventory,
+  previous: PreparedModelCatalogInventory | undefined,
+  source: "provider" | "native",
+  staticCatalog: ModelCatalogSnapshot,
+): PreparedModelCatalogInventory {
+  const providers = source === "provider" ? candidate : (previous ?? candidate);
+  const native = source === "native" ? candidate.catalog : previous?.catalog;
+  const apiCatalog = source === "native" && !previous ? staticCatalog : providers.catalog;
+  return {
+    ...providers,
+    catalog: native ? mergePreparedNativeCatalog(native, apiCatalog) : apiCatalog,
+  };
+}
+
+/** Native completion changes readiness without replacing visible provider facts. */
+export function retainPreparedNativeCatalogReadiness(
+  catalog: ModelCatalogSnapshot | undefined,
+  baseline: ModelCatalogSnapshot | undefined,
+): ModelCatalogSnapshot | undefined {
+  if (!catalog || !baseline) {
+    return catalog;
+  }
+  baseline.authoritative = catalog.authoritative;
+  if (isPreparedModelCatalogFull(catalog)) {
+    markPreparedModelCatalogFull(baseline);
+  }
+  return retainPreparedModelCatalogPublication(catalog, baseline);
+}
+
 function catalogPublicationContent(catalog: ModelCatalogSnapshot) {
   const { pendingProviders: _pending, refreshFailed: _failed, ...inventory } = catalog;
   // Scoped merges move providers, not their model preference order. Compare a grouped view

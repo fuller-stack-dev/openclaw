@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import {
   racePromiseWithAbortSignal,
   type CliBackendModelCatalogContext,
@@ -6,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/cli-backend";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { CLAUDE_CLI_ROUTE_PROBE_MODEL_IDS, CLAUDE_MODEL_ID_ALIASES } from "./cli-constants.js";
+import { resolveCommand } from "./cli-installation-command.js";
 import {
   detectClaudeInstallation,
   probeClaudeVersion,
@@ -31,6 +33,12 @@ type CheckRecord = {
   minimumVersion: string;
   pendingUntil?: number;
   message?: string;
+};
+
+type VerificationRecord = {
+  attemptId: string;
+  installationKey: string;
+  pendingUntil: number;
 };
 
 type VersionFact = {
@@ -116,7 +124,11 @@ export function createClaudeCliReadiness(
   const facts = new Map<string, VersionFact>();
   const pending = new Map<
     string,
-    { promise: Promise<VersionFact>; reason: CliBackendModelCatalogContext["reason"] }
+    {
+      promise: Promise<VersionFact>;
+      reason: CliBackendModelCatalogContext["reason"];
+      assertCurrent: () => void;
+    }
   >();
 
   const check = async (
@@ -129,6 +141,52 @@ export function createClaudeCliReadiness(
     };
     assertCurrent();
     const command = { ...context, assertCurrent };
+    const verification = api.runtime.state
+      .openKeyedStore<VerificationRecord>({
+        namespace: "claude-cli-verification",
+        maxEntries: 64,
+        overflowPolicy: "reject-new",
+        env: context.env,
+      })
+      .withCurrent?.({ assertCurrent });
+    const launcher = await resolveCommand(command);
+    // Bind the selected absolute launcher, not its replaceable target or caller's
+    // PATH/generation. Keep parent symlinks lexical so retargeting cannot lose state.
+    const verificationKey =
+      launcher && createHash("sha256").update(path.resolve(launcher)).digest("hex");
+    const blockedVerification = (): VersionFact => ({
+      minimumChecked: minimum,
+      nextCheckAt: Date.now() + 5_000,
+      message:
+        "Claude's updated launcher could not be verified. Repair the selected installation, then refresh models.",
+    });
+    const verifyPendingInstallation = async (): Promise<boolean> => {
+      if (!verification || !verificationKey) {
+        return true;
+      }
+      const unresolved = await verification.observe(verificationKey);
+      if (!unresolved.value) {
+        return true;
+      }
+      if (unresolved.value.pendingUntil > Date.now()) {
+        return false;
+      }
+      const installed = await detectClaudeInstallation(command);
+      if (
+        installed.status !== "supported" ||
+        installed.installation.key !== unresolved.value.installationKey
+      ) {
+        return false;
+      }
+      const cleared = await verification.compareAndApply(verificationKey, unresolved.comparison, {
+        operation: "delete",
+        action: "delete",
+      });
+      return cleared.status !== "conflict";
+    };
+    if (!(await verifyPendingInstallation())) {
+      return blockedVerification();
+    }
     const version = await probeClaudeVersion(command);
     assertCurrent();
     const observedAt = Date.now();
@@ -161,7 +219,7 @@ export function createClaudeCliReadiness(
         env: context.env,
       })
       .withCurrent?.({ assertCurrent });
-    if (!store) {
+    if (!store || !verification || !verificationKey) {
       return {
         ...fact,
         message:
@@ -205,6 +263,10 @@ export function createClaudeCliReadiness(
     }
     const maintained = await context.withMaintenance(async () => {
       assertCurrent();
+      // Admission may have waited behind another installation attempt.
+      if (!(await verifyPendingInstallation())) {
+        return blockedVerification();
+      }
       const refreshedVersion = await probeClaudeVersion(command);
       assertCurrent();
       if (satisfies(refreshedVersion, minimum)) {
@@ -241,13 +303,29 @@ export function createClaudeCliReadiness(
         }
         observation = claim.current;
       }
+      // This non-evicting marker survives failed verification, process death and
+      // authority retirement. Persist it before the installer can mutate anything.
+      const marker = await verification.observe(verificationKey);
+      if (marker.value) {
+        return blockedVerification();
+      }
+      const marked = await verification.compareAndApply(verificationKey, marker.comparison, {
+        operation: "update",
+        action: "set",
+        value: {
+          attemptId: attempt.attemptId,
+          installationKey: detected.installation.key,
+          pendingUntil: attempt.pendingUntil!,
+        },
+      });
+      if (marked.status === "conflict") {
+        return blockedVerification();
+      }
       let result: VersionFact;
       try {
         const updated = await updateClaudeInstallation(command, detected.installation);
         assertCurrent();
         if (updated.status === "updated") {
-          // Even an ineffective channel update can change identity/capabilities.
-          invalidateVersion();
           result = {
             ...fact,
             version: updated.version,
@@ -260,7 +338,7 @@ export function createClaudeCliReadiness(
         } else {
           result = {
             ...fact,
-            version: await probeClaudeVersion(command),
+            version: updated.verifiedVersion,
             message: updated.message,
           };
         }
@@ -268,6 +346,19 @@ export function createClaudeCliReadiness(
         // The already-persisted attempt limits retries even if this owner retires.
         assertCurrent();
         throw error;
+      } finally {
+        // Mutation can finish before cancellation or authority retirement is seen.
+        invalidateVersion();
+      }
+      const verified = await verification.observe(verificationKey);
+      if (verified.value?.attemptId === attempt.attemptId) {
+        await verification.compareAndApply(
+          verificationKey,
+          verified.comparison,
+          result.version
+            ? { operation: "delete", action: "delete" }
+            : { operation: "update", action: "set", value: { ...verified.value, pendingUntil: 0 } },
+        );
       }
       const completed = await store.observe(key);
       assertCurrent();
@@ -330,7 +421,26 @@ export function createClaudeCliReadiness(
       if (!current) {
         break;
       }
-      const shared = await racePromiseWithAbortSignal(current.promise, context.signal);
+      let shared: VersionFact;
+      try {
+        shared = await racePromiseWithAbortSignal(current.promise, context.signal);
+      } catch (error) {
+        if (context.signal.aborted) {
+          throw error;
+        }
+        context.assertCurrent();
+        try {
+          current.assertCurrent();
+        } catch {
+          // A caller owns its authority, not the lifetime of unrelated waiters.
+          // Reacquire only after that owner retires; active-owner failures propagate.
+          if (pending.get(key) === current) {
+            pending.delete(key);
+          }
+          continue;
+        }
+        throw error;
+      }
       context.assertCurrent();
       context.signal.throwIfAborted();
       if (
@@ -353,7 +463,14 @@ export function createClaudeCliReadiness(
       return project(context, cached);
     }
     const promise = check(context, minimum);
-    pending.set(key, { promise, reason: context.reason });
+    pending.set(key, {
+      promise,
+      reason: context.reason,
+      assertCurrent: () => {
+        context.signal.throwIfAborted();
+        context.assertCurrent();
+      },
+    });
     try {
       const fact = await promise;
       context.assertCurrent();

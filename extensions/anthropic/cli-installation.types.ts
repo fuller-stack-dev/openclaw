@@ -35,5 +35,6 @@ export type ClaudeInstallationUpdateResult =
   | {
       status: "failed";
       reason: "owner-changed" | "update-failed" | "verification-failed";
+      verifiedVersion?: string;
       message: string;
     };
