@@ -22,7 +22,7 @@ import {
   withAgentRunId,
   withoutIncognitoLlmContent,
 } from "./hook-agent-observations.js";
-import { readClaimingHookAdmission, type ClaimingHookAdmission } from "./hook-claim-admission.js";
+import * as claimingHookAdmission from "./hook-claim-admission.js";
 import {
   type GateHookResult,
   type InputGateDecision,
@@ -672,7 +672,7 @@ export function createHookRunner(
 
     for (const hook of selectedHooks) {
       policy.assertHandlerBoundaryActive?.();
-      readClaimingHookAdmission(ctx)?.assertCurrent?.();
+      claimingHookAdmission.readClaimingHookAdmission(ctx)?.assertCurrent?.();
       let shouldStop = false;
       try {
         const handler = hook.handler as (event: unknown, ctx: unknown) => Promise<HookResult<K>>;
@@ -733,7 +733,7 @@ export function createHookRunner(
         handleHookError({ hookName, pluginId: hook.pluginId, error: err });
       }
       policy.assertHandlerBoundaryActive?.();
-      readClaimingHookAdmission(ctx)?.assertCurrent?.();
+      claimingHookAdmission.readClaimingHookAdmission(ctx)?.assertCurrent?.();
       if (shouldStop) {
         break;
       }
@@ -748,7 +748,7 @@ export function createHookRunner(
   async function runClaimingHook<K extends PluginHookName, TResult extends { handled: boolean }>(
     hookName: K,
     event: HookEvent<K>,
-    ctx: HookContext<K> & ClaimingHookAdmission,
+    ctx: HookContext<K> & claimingHookAdmission.ClaimingHookAdmission,
     runHandler?: (run: () => Promise<TResult | void>) => Promise<TResult | void>,
   ): Promise<TResult | undefined> {
     const hooks = getHooksForName(registry, hookName, ctx);
@@ -769,14 +769,14 @@ export function createHookRunner(
     hooks: PluginHookRegistration<K>[],
     hookName: K,
     event: HookEvent<K>,
-    ctx: HookContext<K> & ClaimingHookAdmission,
+    ctx: HookContext<K> & claimingHookAdmission.ClaimingHookAdmission,
     runHandler?: (run: () => Promise<TResult | void>) => Promise<TResult | void>,
   ): Promise<
     | { status: "handled"; result: TResult }
     | { status: "declined" }
     | { status: "error"; error: string }
   > {
-    const admission = readClaimingHookAdmission(ctx);
+    const admission = claimingHookAdmission.readClaimingHookAdmission(ctx);
     let firstError: string | undefined;
     for (const hook of hooks) {
       // Host admission failures end dispatch; plugin fail-open policy cannot swallow them.
@@ -792,7 +792,7 @@ export function createHookRunner(
           );
           return await awaitHook(hook, promise);
         };
-        handlerResult = runHandler ? await runHandler(invokeHandler) : await invokeHandler();
+        handlerResult = await claimingHookAdmission.invoke(admission, invokeHandler, runHandler);
       } catch (err) {
         firstError ??= sanitizeHookError(err);
         handleHookError({ hookName, pluginId: hook.pluginId, error: err });
