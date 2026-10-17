@@ -31,6 +31,7 @@ import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { enqueueSwarmRun, holdQueuedSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
 import { registerNativePluginRewriteCases } from "./subagent-spawn.plugin-native-rewrite.test-support.js";
+import { registerNativePluginSandboxCases } from "./subagent-spawn.plugin-native-sandbox.test-support.js";
 import {
   createSpawnOperatorSource,
   recordSpawnBoundaryFinal,
@@ -41,7 +42,10 @@ type BoundParent = Awaited<ReturnType<typeof createSpawnBoundaryParent>>;
 type GatewayRuntime = ReturnType<typeof createGatewayInstanceRuntime>;
 
 export type NativePluginSpawnTestOptions = {
-  createBoundParent: (authority?: AdmittedRunOperatorAuthority) => Promise<BoundParent>;
+  createBoundParent: (
+    authority?: AdmittedRunOperatorAuthority,
+    settings?: { guestProfileId?: string },
+  ) => Promise<BoundParent>;
   createBoundGateway: (
     bound: BoundParent,
   ) => Promise<{ context: GatewayRequestContext; runtime: GatewayRuntime }>;
@@ -72,6 +76,7 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
     runEmbeddedAgent,
   } = options;
   registerNativePluginRewriteCases(options);
+  registerNativePluginSandboxCases(options);
   it("native plugin facade keeps native IDs, exact overrides, parent custody and requester policy", async () => {
     const source = createSpawnOperatorSource();
     const bound = await createBoundParent(source.authority);

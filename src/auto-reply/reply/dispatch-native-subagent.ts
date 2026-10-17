@@ -1,5 +1,6 @@
 import type { PreparedAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { resolvePreparedSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { resolveStoredSessionPermissionPolicy } from "../../agents/tool-fs-policy.js";
 import { readChannelContextAdmissionEvidence } from "../../channels/message-access/admission-evidence.js";
@@ -106,8 +107,15 @@ export async function runWithReplyNativeSubagents<T>(
       const { createRequestNativeSubagentRuntime } =
         await import("../../agents/plugin-native-subagent.js");
       assertCurrent();
+      const sandbox = resolvePreparedSandboxRuntimeStatus({
+        cfg,
+        agentId: sessionAgentId,
+        sessionKey,
+        preparedSessionEntry: entry,
+      });
       const conversationCapabilityProfile = await prepareConversationCapabilityProfile({
         ...options,
+        sandboxToolPolicy: sandbox.sandboxed ? sandbox.toolPolicy : undefined,
         preparedSessionEntry: { sessionKey, entry },
       });
       assertCurrent();
