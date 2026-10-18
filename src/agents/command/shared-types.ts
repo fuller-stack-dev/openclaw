@@ -91,6 +91,12 @@ export type AgentRunMessageContext = {
   taskSuggestionDeliveryMode?: TaskSuggestionDeliveryMode;
   /** Require explicit message tool targets (no implicit last-route sends). */
   requireExplicitMessageTarget?: boolean;
+  /**
+   * Whether a delivered source send that omits `final` ends the turn. Absent means yes:
+   * a send answers the inbound message. Runs that only deliver to a configured target
+   * set false, so post-send work still runs.
+   */
+  messageToolFinalByDefault?: boolean;
 };
 
 export type AgentRunChannelContext = {
@@ -173,6 +179,8 @@ export type AgentRunInputContext = {
 };
 
 export type AgentRunTranscriptContext = {
+  /** Host-admitted private completion; retain its transcript without user-facing projection. */
+  privateCompletion?: true;
   /** Caller-owned in-memory transcript for ephemeral helper runs. */
   sessionManager?: SessionManager;
   sessionId: string;

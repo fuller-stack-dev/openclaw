@@ -1,10 +1,10 @@
 import { createRuntimeConfigReader } from "../../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import {
-  evaluateDecisionOperation,
+  evaluateDecisionV2Operation,
   completeDecisionEvaluation,
 } from "../../../decisions/runtime.js";
-import type { DecisionOutcome } from "../../../decisions/types.js";
+import type { DecisionAnswerV2, DecisionOutcomeV2 } from "../../../decisions/types-v2.js";
 import { getPluginRegistryForContext } from "../../../plugins/runtime/gateway-request-scope.js";
 import { isDecisionAssistanceEligible } from "../../decision-assistance.js";
 import { resolveDecisionModelSetting } from "../../decision-model-setting.js";
@@ -43,6 +43,15 @@ export type DecisionPrefilterResult = {
   reason: string;
   context?: DecisionContextFacts;
 };
+
+function isStrongNo(answer: DecisionAnswerV2 | undefined): boolean {
+  return (
+    answer?.type === "boolean" &&
+    typeof answer.probabilityTrue === "number" &&
+    answer.probabilityTrue < 0.35 &&
+    (answer.answer === undefined || answer.answer === false)
+  );
+}
 
 /** Ordinary unavailability preserves tools; cancellation and contract errors remain terminal. */
 export async function evaluateAttemptDecisionToolPrefilter(
@@ -99,16 +108,19 @@ export async function evaluateAttemptDecisionToolPrefilter(
       currentSelection?.model === selection?.model
     );
   };
-  const evaluation = await evaluateDecisionOperation(
+  const evaluation = await evaluateDecisionV2Operation(
     {
       state: {
-        latestRequest: context.latestRequest,
-        recentConversation: context.recentConversation,
-        omittedContext: {
-          olderConversation: context.facts.olderContextOmitted,
-          toolPayloads: context.facts.toolPayloadsOmitted,
+        type: "json",
+        value: {
+          latestRequest: context.latestRequest,
+          recentConversation: context.recentConversation,
+          omittedContext: {
+            olderConversation: context.facts.olderContextOmitted,
+            toolPayloads: context.facts.toolPayloadsOmitted,
+          },
+          ...(promptBuildFields ? { beforePromptBuild: promptBuildFields } : {}),
         },
-        ...(promptBuildFields ? { beforePromptBuild: promptBuildFields } : {}),
       },
       questions: {
         missing_request_context: {
@@ -155,10 +167,12 @@ export async function evaluateAttemptDecisionToolPrefilter(
 }
 
 function projectPrefilterResult(
-  outcome: DecisionOutcome,
+  outcome: DecisionOutcomeV2,
   context: DecisionContextFacts,
 ): DecisionPrefilterResult {
-  const facts = { context };
+  const facts = {
+    context,
+  };
   if (outcome.status === "unavailable") {
     return { shouldPruneTools: false, status: "unavailable", reason: outcome.reason, ...facts };
   }
@@ -167,7 +181,7 @@ function projectPrefilterResult(
   const needsTools = answers?.next_response_needs_tools;
   // Independent yes/no probabilities, not degrees or an extra confidence score.
   // A strong no to both is required; absent, uncertain, or affirmative answers retain tools.
-  if (missingContext?.type !== "boolean" || !(missingContext.probabilityTrue < 0.35)) {
+  if (!isStrongNo(missingContext)) {
     return {
       shouldPruneTools: false,
       status: "retained",
@@ -175,7 +189,7 @@ function projectPrefilterResult(
       ...facts,
     };
   }
-  return needsTools?.type === "boolean" && needsTools.probabilityTrue < 0.35
+  return isStrongNo(needsTools)
     ? { shouldPruneTools: true, status: "proposed", reason: "conversational", ...facts }
     : { shouldPruneTools: false, status: "retained", reason: "action-or-uncertain", ...facts };
 }
