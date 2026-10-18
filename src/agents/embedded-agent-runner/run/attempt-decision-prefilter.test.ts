@@ -5,13 +5,18 @@ import {
 } from "../../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { AgentDefaultsBaseSchema } from "../../../config/zod-schema.agent-defaults-base.js";
-import type { evaluateDecisionInRegistry } from "../../../decisions/runtime.js";
+import type { DecisionEvaluation, evaluateDecisionInRegistry } from "../../../decisions/runtime.js";
 import type { DecisionOutcome } from "../../../decisions/types.js";
 import { makeAssistantMessageFixture } from "../../test-helpers/assistant-message-fixtures.js";
 import { evaluateAttemptDecisionToolPrefilter } from "./attempt-decision-prefilter.js";
 
 const mocks = vi.hoisted(() => ({ evaluate: vi.fn<typeof evaluateDecisionInRegistry>() }));
-vi.mock("../../../decisions/runtime.js", () => ({ evaluateDecisionInRegistry: mocks.evaluate }));
+vi.mock("../../../decisions/runtime.js", () => ({
+  evaluateDecisionOperation: async (...args: Parameters<typeof evaluateDecisionInRegistry>) => ({
+    outcome: await mocks.evaluate(...args),
+  }),
+  completeDecisionEvaluation: (evaluation: DecisionEvaluation) => evaluation.outcome,
+}));
 vi.mock("../../../plugins/runtime/gateway-request-scope.js", () => ({
   getPluginRegistryForContext: () => null,
 }));

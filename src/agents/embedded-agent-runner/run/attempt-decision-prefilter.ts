@@ -1,6 +1,10 @@
 import { createRuntimeConfigReader } from "../../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import { evaluateDecisionInRegistry } from "../../../decisions/runtime.js";
+import {
+  evaluateDecisionOperation,
+  completeDecisionEvaluation,
+} from "../../../decisions/runtime.js";
+import type { DecisionOutcome } from "../../../decisions/types.js";
 import { getPluginRegistryForContext } from "../../../plugins/runtime/gateway-request-scope.js";
 import { isDecisionAssistanceEligible } from "../../decision-assistance.js";
 import { resolveDecisionModelSetting } from "../../decision-model-setting.js";
@@ -95,7 +99,7 @@ export async function evaluateAttemptDecisionToolPrefilter(
       currentSelection?.model === selection?.model
     );
   };
-  const outcome = await evaluateDecisionInRegistry(
+  const evaluation = await evaluateDecisionOperation(
     {
       state: {
         latestRequest: context.latestRequest,
@@ -145,9 +149,16 @@ export async function evaluateAttemptDecisionToolPrefilter(
   );
   params.signal.throwIfAborted();
   params.assertActive();
-  const facts = {
-    context: context.facts,
-  };
+  const result = projectPrefilterResult(evaluation.outcome, context.facts);
+  completeDecisionEvaluation(evaluation);
+  return result;
+}
+
+function projectPrefilterResult(
+  outcome: DecisionOutcome,
+  context: DecisionContextFacts,
+): DecisionPrefilterResult {
+  const facts = { context };
   if (outcome.status === "unavailable") {
     return { shouldPruneTools: false, status: "unavailable", reason: outcome.reason, ...facts };
   }
