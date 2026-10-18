@@ -1,5 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { expect, it, vi, type Mock } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { runWithReplyNativeSubagents } from "../../../auto-reply/reply/dispatch-native-subagent.js";
 import { buildTestCtx } from "../../../auto-reply/reply/test-ctx.js";
@@ -7,8 +7,6 @@ import {
   loadSessionEntry,
   loadTranscriptEvents,
 } from "../../../config/sessions/session-accessor.js";
-import type { createGatewayInstanceRuntime } from "../../../gateway/server-instance-runtime.js";
-import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
@@ -23,7 +21,6 @@ import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-tr
 import {
   readAdmittedRunOperatorAuthority,
   resolvePreparedRunAdmission,
-  type AdmittedRunOperatorAuthority,
 } from "../../admitted-run-context.js";
 import { resolveAgentWorkspaceDir } from "../../agent-scope.js";
 import { finalizeAgentTools } from "../../agent-tools.finalize.js";
@@ -35,35 +32,8 @@ import { registerNativePluginSandboxCases } from "./subagent-spawn.plugin-native
 import {
   createSpawnOperatorSource,
   recordSpawnBoundaryFinal,
-  type createSpawnBoundaryParent,
+  type NativePluginSpawnTestOptions,
 } from "./subagent-spawn.production-boundary.test-support.js";
-
-type BoundParent = Awaited<ReturnType<typeof createSpawnBoundaryParent>>;
-type GatewayRuntime = ReturnType<typeof createGatewayInstanceRuntime>;
-
-export type NativePluginSpawnTestOptions = {
-  createBoundParent: (
-    authority?: AdmittedRunOperatorAuthority,
-    settings?: { guestProfileId?: string },
-  ) => Promise<BoundParent>;
-  createBoundGateway: (
-    bound: BoundParent,
-  ) => Promise<{ context: GatewayRequestContext; runtime: GatewayRuntime }>;
-  closeBoundGateway: (
-    bound: BoundParent,
-    runtime: GatewayRuntime,
-    childRunId?: string,
-  ) => Promise<unknown[]>;
-  waitForEmbeddedRun: (
-    bound: BoundParent,
-    runId: string,
-    started?: Promise<void>,
-    calls?: number,
-  ) => Promise<void>;
-  settleRootWork: (keepObserving?: boolean) => Promise<void>;
-  throwBoundFailures: (failures: unknown[]) => void;
-  runEmbeddedAgent: Mock<typeof import("../../embedded-agent.js").runEmbeddedAgent>;
-};
 
 export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOptions) {
   const {

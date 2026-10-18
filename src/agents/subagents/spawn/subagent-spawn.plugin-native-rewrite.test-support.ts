@@ -25,11 +25,11 @@ import {
   SWARM_CODE_MODE_IDEMPOTENCY_KEY,
   SWARM_CODE_MODE_REQUEST_FINGERPRINT,
 } from "../swarm/swarm-code-mode.js";
-import type { NativePluginSpawnTestOptions } from "./subagent-spawn.plugin-native.test-support.js";
 import {
   createSpawnBoundaryParent,
   createSpawnOperatorSource,
   recordSpawnBoundaryFinal,
+  type NativePluginSpawnTestOptions,
 } from "./subagent-spawn.production-boundary.test-support.js";
 
 type BoundParent = Awaited<ReturnType<NativePluginSpawnTestOptions["createBoundParent"]>>;

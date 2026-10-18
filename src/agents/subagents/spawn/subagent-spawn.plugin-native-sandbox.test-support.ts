@@ -15,10 +15,10 @@ import {
 import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { enqueueSwarmRun, holdQueuedSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
-import type { NativePluginSpawnTestOptions } from "./subagent-spawn.plugin-native.test-support.js";
 import {
   createSpawnOperatorSource,
   recordSpawnBoundaryFinal,
+  type NativePluginSpawnTestOptions,
 } from "./subagent-spawn.production-boundary.test-support.js";
 
 export function registerNativePluginSandboxCases(options: NativePluginSpawnTestOptions) {
