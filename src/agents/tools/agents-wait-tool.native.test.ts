@@ -23,11 +23,13 @@ async function collect(
     assertCurrent?: () => void;
   },
 ) {
+  const tool = createAgentsWaitTool({ agentSessionKey: key, agentId: "main" });
   const result = await withNativeSubagentCollectorOwner(
+    tool,
     "native-collector-test",
     { ...owner, assertCurrent: params.assertCurrent ?? (() => {}) },
     () =>
-      createAgentsWaitTool({ agentSessionKey: key, agentId: "main" }).execute(
+      tool.execute(
         "native-collector-test",
         {
           ids: params.ids,

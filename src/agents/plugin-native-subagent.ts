@@ -268,6 +268,7 @@ export function createRequestNativeSubagentRuntime(
       const toolCallId = randomUUID();
       const result = await withCaller(() =>
         withNativeSubagentCollectorOwner(
+          wait,
           toolCallId,
           {
             currentSessionKeys: new Set([source.options.sessionKey]),

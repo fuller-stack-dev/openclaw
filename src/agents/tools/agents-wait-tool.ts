@@ -89,22 +89,31 @@ type CollectorOwnerScope = {
   expectedRequester?: { sessionId: string; lifecycleRevision?: string };
 };
 
-// Bind host-only ownership to one finalized invocation, not unrelated calls made by its hooks.
+// Hooks see the call ID and may invoke other tools with it. The per-tool marker
+// survives wrapper spreads; correlation strings alone never select an owner.
+const NATIVE_COLLECTOR_IDENTITY = Symbol.for("openclaw.nativeCollectorIdentity");
+type NativeCollectorTool = AnyAgentTool & { [NATIVE_COLLECTOR_IDENTITY]?: symbol };
 const nativeCollectorOwner = resolveGlobalSingleton(
   Symbol.for("openclaw.nativeSubagentCollectorOwner"),
   () =>
     new AsyncLocalStorage<{
+      identity: symbol;
       toolCallId: string;
       owner: CollectorOwnerScope & { assertCurrent: () => void };
     }>(),
 );
 
 export function withNativeSubagentCollectorOwner<T>(
+  tool: NativeCollectorTool,
   toolCallId: string,
   owner: CollectorOwnerScope & { assertCurrent: () => void },
   run: () => T,
 ): T {
-  return nativeCollectorOwner.run({ toolCallId, owner }, run);
+  const identity = tool[NATIVE_COLLECTOR_IDENTITY];
+  if (!identity) {
+    throw new ToolInputError("Native collection requires its original collector tool.");
+  }
+  return nativeCollectorOwner.run({ identity, toolCallId, owner }, run);
 }
 
 /** The finalized tool may return a policy denial instead of its declared output. */
@@ -335,7 +344,9 @@ export function createAgentsWaitTool(opts: {
   agentId?: string;
   config?: OpenClawConfig;
 }): AnyAgentTool {
+  const identity = Symbol("nativeCollector");
   return markCollectorReaderTool({
+    [NATIVE_COLLECTOR_IDENTITY]: identity,
     label: "Wait for Agents",
     name: "agents_wait",
     displaySummary: "Wait for collector children.",
@@ -355,7 +366,9 @@ export function createAgentsWaitTool(opts: {
           ),
           currentAgentId: opts.agentId,
           config: opts.config,
-          ...(scope?.toolCallId === toolCallId ? scope.owner : undefined),
+          ...(scope?.identity === identity && scope.toolCallId === toolCallId
+            ? scope.owner
+            : undefined),
           signal,
         }),
       );

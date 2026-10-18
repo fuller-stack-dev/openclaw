@@ -149,7 +149,7 @@ export function registerNativePluginRewriteCases(options: NativePluginSpawnTestO
     }
   }
 
-  it("native plugin isolates collector ownership across nested waits", async () => {
+  it("native plugin binds collector ownership to the intended tool across nested waits", async () => {
     await withRewriteFixture(async ({ native, bound, modelsStarted, makeNative }) => {
       const ownerB = createSpawnOperatorSource("collector-b");
       const parentB = await createSpawnBoundaryParent({
@@ -192,9 +192,15 @@ export function registerNativePluginRewriteCases(options: NativePluginSpawnTestO
         ]);
         type WaitResult = Awaited<ReturnType<AnyAgentTool["execute"]>>;
         let nested:
-          | [WaitResult, WaitResult, Awaited<ReturnType<NativeSubagentRuntime["collect"]>>]
+          | [
+              WaitResult,
+              WaitResult,
+              WaitResult,
+              Awaited<ReturnType<NativeSubagentRuntime["collect"]>>,
+            ]
           | undefined;
         let outerCallId: string | undefined;
+        let nestedHookActive = false;
         const hooks = createMockPluginRegistry([]);
         addTestHook({
           registry: hooks,
@@ -205,16 +211,23 @@ export function registerNativePluginRewriteCases(options: NativePluginSpawnTestO
               event.toolName !== "agents_wait" ||
               !Array.isArray(event.params.ids) ||
               !event.params.ids.includes(childA.runId) ||
-              event.toolCallId?.startsWith("ordinary-b")
+              nestedHookActive
             ) {
               return;
             }
             outerCallId = event.toolCallId;
-            nested = await Promise.all([
-              ordinaryB.execute("ordinary-b-own", { ids: [childB.runId], timeoutSeconds: 0 }),
-              ordinaryB.execute("ordinary-b-foreign", { ids: [childA.runId], timeoutSeconds: 0 }),
-              nativeB.collect({ ids: [childB.runId], timeoutSeconds: 0 }),
-            ]);
+            const callId = expectDefined(event.toolCallId, "hook-visible native call ID");
+            nestedHookActive = true;
+            try {
+              nested = await Promise.all([
+                ordinaryB.execute(callId, { ids: [childB.runId], timeoutSeconds: 0 }),
+                ordinaryB.execute("ordinary-b-foreign", { ids: [childA.runId], timeoutSeconds: 0 }),
+                ordinaryB.execute(callId, { ids: [childA.runId], timeoutSeconds: 0 }),
+                nativeB.collect({ ids: [childB.runId], timeoutSeconds: 0 }),
+              ]);
+            } finally {
+              nestedHookActive = false;
+            }
           },
         });
         initializeGlobalHookRunner(hooks);
@@ -223,7 +236,15 @@ export function registerNativePluginRewriteCases(options: NativePluginSpawnTestO
           completed: [{ runId: childA.runId, status: "done" }],
           pending: [],
         });
-        const [own, foreign, reentrant] = expectDefined(nested, "nested waits completed");
+        const [own, foreign, sameIdForeign, reentrant] = expectDefined(
+          nested,
+          "nested waits completed",
+        );
+        expect(sameIdForeign.details).toMatchObject({
+          completed: [],
+          pending: [],
+          errors: [{ runId: childA.runId, error: "not_owner" }],
+        });
         expect(own.details).toMatchObject({
           completed: [{ runId: childB.runId, status: "done" }],
           pending: [],
