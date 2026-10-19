@@ -246,6 +246,13 @@ discarding your edits. Switching identities or losing access still clears the
 affected settings. These drafts are not persisted by this behavior: reloading
 or closing the tab can discard them, including entered credentials.
 
+Plugin Settings panels, including the Memory overview and memory search, stay open
+through the same kind of reconnect. Search results, the typed query, and opened
+memory files remain visible; searching waits for the connection, and replies to
+requests sent before the drop are discarded. Reopening a file whose read was
+interrupted retries it. Changing the Settings agent, account, or access starts a
+fresh panel.
+
 Rejected model-default saves return the pickers to the saved configuration.
 **Retry** keeps the rejected change with the configuration write owner. Model
 edits that have not been sent still survive a temporary disconnect. After
@@ -388,10 +395,23 @@ one history notice offers **Retry**, which reloads the conversation and restores
 its live subscription, including approval updates. Permission and other terminal
 failures remain visible rather than being silently retried.
 
+After a Gateway restart, eligible accepted chat inputs resume on the server in
+order within each session, even while this browser is closed. Automatic recovery
+requires the original session and current operator access, and is limited to
+inputs accepted in the past 24 hours. Cancelled inputs never resume. Inputs that
+cannot resume stay visibly interrupted for review. The browser keeps the original
+submission ID when retrying, so reconnect cannot duplicate a recovered input.
+It does not resend interrupted inputs automatically: the server owns recovery order.
+If a saved input remains interrupted, copy it and send again to continue.
+
 When the Gateway confirms that it holds the same pending input, the Control UI clears the
 uncertain-delivery warning without sending the message again. The browser keeps its retry
 payload until consumption or cancellation is confirmed. If delivery is still unknown,
-the review warning remains.
+the review warning remains. Confirmed server custody does not block later browser-queued
+chat sends, including when the accepted input is too old for automatic recovery.
+Local commands such as `/compact` and `/reset` in the same browser outbox still wait
+behind that input. An independent authorized reset from another client can cancel
+pending work, as with other session resets.
 If the Gateway is holding that input for a later turn, it appears in the queue
 above the composer. Removing that row withdraws the exact queued message without
 stopping the active turn. Once cancellation is confirmed, the removed prompt and
