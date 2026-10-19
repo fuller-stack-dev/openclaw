@@ -76,9 +76,9 @@ export function runReplyDispatchHook(
               {
                 ...(!options.isTailDispatch ? { prepare: state.assertCurrentBindingRoute } : {}),
                 assertCurrent: state.turnAdoption?.assertCurrent,
-                run: (invoke) => runWithReplyNativeSubagents(state, invoke),
               },
             ),
+            (invoke) => runWithReplyNativeSubagents(state, invoke),
           );
         },
         state.trackDispatchLifecycleWork,
