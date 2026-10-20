@@ -48,6 +48,7 @@ const CollectorCompletionSchema = Type.Object(
     structured: Type.Optional(Type.Unknown()),
     error: Type.Optional(Type.String()),
     schemaError: Type.Optional(Type.String()),
+    reason: Type.Optional(Type.Literal("yielded_without_result")),
     sessionKey: Type.String(),
     label: Type.Optional(Type.String()),
     usage: Type.Optional(
@@ -183,6 +184,7 @@ function completionResult(
       ? { error: entry.execution.outcome.error }
       : {}),
     ...(completion.schemaError ? { schemaError: completion.schemaError } : {}),
+    ...(completion.reason ? { reason: completion.reason } : {}),
     sessionKey: entry.childSessionKey,
     ...(entry.label ? { label: entry.label } : {}),
     ...(completion.usage ? { usage: completion.usage } : {}),
