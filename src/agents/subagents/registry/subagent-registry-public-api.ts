@@ -19,6 +19,8 @@ import {
 import {
   listSwarmRunsForGroupFromRuns,
   getLatestSubagentRunByChildSessionKeyFromRuns,
+  buildLatestSubagentRunReadIndexFromRuns,
+  listRunsForRequesterFromRuns,
 } from "./subagent-registry-queries.js";
 import type { PreparedSubagentRunsRead } from "./subagent-registry-read-snapshot.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
@@ -250,6 +252,38 @@ export function createSubagentRegistryPublicApi(config: {
     );
   }
 
+  /** Read current direct-child custody with an exact parent incarnation fence. */
+  async function listSubagentRunsForRequester(params: {
+    sessionKey: string;
+    agentId: string;
+    sessionId: string;
+    lifecycleRevision?: string;
+  }): Promise<SubagentRunRecord[]> {
+    return withSubagentRunReadSnapshot(
+      runs,
+      (snapshot) => {
+        const latest = buildLatestSubagentRunReadIndexFromRuns(snapshot);
+        return {
+          runIds: [...snapshot.values()]
+            .filter(
+              (entry) =>
+                entry.requesterSessionKey === params.sessionKey &&
+                latest.getLatestSubagentRun(entry.childSessionKey, entry.childAgentId) === entry,
+            )
+            .map((entry) => entry.runId),
+          sessionKeys: [],
+        };
+      },
+      (_selection, selected) =>
+        listRunsForRequesterFromRuns(new Map(selected), params.sessionKey, {
+          requesterAgentId: params.agentId,
+          requesterSessionId: params.sessionId,
+          requesterLifecycleRevision: params.lifecycleRevision,
+        }),
+      "all",
+    );
+  }
+
   /** Resolve a collector reserved by a replay-safe host bridge request. */
   async function getSwarmRunByLaunchReplayKey(
     replayKey: string,
@@ -373,6 +407,7 @@ export function createSubagentRegistryPublicApi(config: {
     recordSwarmStructuredOutput,
     listSwarmRunsForGroup,
     getSwarmRunByLaunchReplayKey,
+    listSubagentRunsForRequester,
     countActiveRunsForSession: countActiveSubagentRunsForSession.bind(null, runs),
     settleRequesterAfterSessionSpawns: settleRequesterTurn,
     markRequesterTurnYielded,

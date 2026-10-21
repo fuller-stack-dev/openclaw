@@ -210,6 +210,7 @@ export async function withRequesterNativeSubagents<T>(
         return {
           spawn: (params) => runtime.spawn(params),
           collect: (params) => runtime.collect(params),
+          ...(runtime.list ? { list: runtime.list } : {}),
         };
       };
       if (state.commandIngressEligible !== undefined) {

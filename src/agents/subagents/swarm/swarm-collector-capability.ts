@@ -9,6 +9,7 @@ import {
 import { SESSIONS_SPAWN_COLLECTOR_GUIDANCE } from "../../tool-description-presets.js";
 import { filterRuntimeCompatibleTools } from "../../tool-schema-projection.js";
 import { ToolInputError, type AnyAgentTool } from "../../tools/common.js";
+import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 
 const COLLECTOR_FIELDS = ["collect", "outputSchema", "groupId"] as const;
 const WAIT_GUIDANCE = SESSIONS_SPAWN_COLLECTOR_GUIDANCE.replace(
@@ -32,6 +33,7 @@ type JoinedSpawn = {
   active: boolean;
   toolCallId?: string;
   claimed: boolean;
+  nativePluginOwner?: SubagentRunRecord["nativePluginOwner"];
 };
 const joinedSpawns = new AsyncLocalStorage<JoinedSpawn>();
 
@@ -154,12 +156,19 @@ export async function runWithJoinedCollectorSpawn<T>(
   tool: object,
   assertCurrent: () => void,
   run: () => Promise<T>,
+  nativePluginOwner?: SubagentRunRecord["nativePluginOwner"],
 ): Promise<T> {
   const owner = getAgentToolAvailabilityBinding(tool);
   if (!owner || !spawnCapabilities.has(owner)) {
     throw new ToolInputError("agents.run requires the native collector spawn tool.");
   }
-  const joined: JoinedSpawn = { owner, assertCurrent, active: true, claimed: false };
+  const joined: JoinedSpawn = {
+    owner,
+    assertCurrent,
+    active: true,
+    claimed: false,
+    nativePluginOwner,
+  };
   return await joinedSpawns.run(joined, async () => {
     try {
       assertJoinedSpawn(joined);
@@ -168,6 +177,21 @@ export async function runWithJoinedCollectorSpawn<T>(
       joined.active = false;
     }
   });
+}
+
+/** Only the exact claimed native spawn can carry SDK provenance into registration. */
+export function captureCollectorPluginOwner(tool: object, toolCallId: string) {
+  const joined = joinedSpawns.getStore();
+  if (
+    !joined ||
+    !joined.claimed ||
+    joined.toolCallId !== toolCallId ||
+    joined.owner !== getAgentToolAvailabilityBinding(tool)
+  ) {
+    return undefined;
+  }
+  assertJoinedSpawn(joined);
+  return joined.nativePluginOwner ? { ...joined.nativePluginOwner } : undefined;
 }
 
 /** Bind the private context to the catalog's exact invocation before awaited hooks. */

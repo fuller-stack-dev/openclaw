@@ -41,6 +41,31 @@ Both calls recheck the invoking plugin's full-runtime lifetime and request autho
 
 A handler owns its calls only until it settles or times out. Accepted children transfer to native execution custody and do not automatically send a chat reply. A controller can await results while its handler remains active, or retain accepted IDs in its existing plugin store and collect during a later eligible invocation for the same parent incarnation. Persist controller decisions in the plugin's own store; this facade does not add a task engine, scheduler, or model-memory protocol. Existing `subagent.run`, `complete`, and `waitForRun` behavior is unchanged.
 
+## Recover plugin-owned native children
+
+Hosts advertising the string capability `native-subagent-list-v1` support optional
+`native.list({ status? })` on both eligible reply-dispatch and command runtimes.
+Probe the optional method before calling it; older hosts and custom runtimes may
+omit it. An older record without host-captured ownership is not inferred to belong
+to a plugin, even if its label, request key, or parent looks familiar.
+
+Listing recovers native acceptance when the plugin did not persist its receipt.
+It returns at most 200 entries, newest first (run ID breaks equal-time ties):
+`{ runId, childSessionKey, requestId, label?, status }`. The status filter is
+applied before the bound. There is no pagination or completeness claim beyond
+that bounded window. A known collector completion has status `done`, `failed`,
+`killed`, or `timeout`; otherwise the native execution state is `queued`,
+`running`, `interrupted`, or `terminal`. Terminal execution alone is not a
+completed result; use `collect` for result/error data.
+
+Only children accepted through this facade by the exact current plugin,
+requester’s profile, and parent session incarnation are returned. Plugins cannot
+supply those identities. A reset parent, another requester, or another plugin
+cannot enumerate them. Listing rechecks request/plugin lifetime, native currency,
+and the current `agents_wait` tool policy; revocation never falls back to an
+administrator. This uses existing native custody and retention, not a separate
+plugin index. Spawn, collection, and reply dispatch remain unchanged.
+
 ## Command-scoped native children
 
 A registered slash command can request the same native spawn/collect runtime

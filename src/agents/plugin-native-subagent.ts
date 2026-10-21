@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { stableStringify } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { getRuntimeConfig } from "../config/io.runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import type {
   NativeSubagentAccepted,
@@ -16,6 +17,7 @@ import { matchesSubagentRequesterSession } from "./subagents/registry/subagent-r
 import {
   getSwarmRunByLaunchReplayKey,
   initSubagentRegistry,
+  listSubagentRunsForRequester,
   prepareSubagentRunsByRunIds,
   type SubagentRunRecord,
 } from "./subagents/registry/subagent-registry.js";
@@ -24,6 +26,10 @@ import {
   SWARM_CODE_MODE_IDEMPOTENCY_KEY,
   SWARM_CODE_MODE_REQUEST_FINGERPRINT,
 } from "./subagents/swarm/swarm-code-mode.js";
+import {
+  runWithJoinedCollectorSpawn,
+  bindJoinedCollectorInvocation,
+} from "./subagents/swarm/swarm-collector-capability.js";
 import {
   readNativeSubagentCollection,
   withNativeSubagentCollectorOwner,
@@ -160,24 +166,28 @@ export function createRequestNativeSubagentRuntime(
     return withGatewayToolCallerIdentity(identity, run);
   };
   let preparedTools: Promise<AnyAgentTool[]> | undefined;
-  const tools = async () => {
+  const tools = async (fresh = false) => {
     assertCurrent();
-    preparedTools ??= withCaller(async () => {
-      const { createOpenClawCodingToolsInternalAsync } = await import("./agent-tools.js");
-      assertCurrent();
-      return createOpenClawCodingToolsInternalAsync(
-        {
-          ...source.options,
-          pluginExecutionAuthority: source.operatorAuthority,
-          assertInvocationCurrent: assertCurrent,
-        },
-        undefined,
-        undefined,
-        undefined,
-        { assertCurrent },
-      );
-    });
-    const result = await preparedTools;
+    const prepare = () =>
+      withCaller(async () => {
+        const { createOpenClawCodingToolsInternalAsync } = await import("./agent-tools.js");
+        assertCurrent();
+        return createOpenClawCodingToolsInternalAsync(
+          {
+            ...source.options,
+            ...(fresh
+              ? { config: getRuntimeConfig(), conversationCapabilityProfile: undefined }
+              : {}),
+            pluginExecutionAuthority: source.operatorAuthority,
+            assertInvocationCurrent: assertCurrent,
+          },
+          undefined,
+          undefined,
+          undefined,
+          { assertCurrent },
+        );
+      });
+    const result = await (fresh ? prepare() : (preparedTools ??= prepare()));
     assertCurrent();
     return result;
   };
@@ -203,6 +213,10 @@ export function createRequestNativeSubagentRuntime(
       const spawn = surface.find((tool) => tool.name === "sessions_spawn");
       if (!spawn) {
         throw new Error("sessions_spawn is not available to the current requester.");
+      }
+      // The provenance join must not grant collector access absent from the native surface.
+      if (!surface.some((tool) => tool.name === "agents_wait")) {
+        throw new Error("agents_wait is not available to the current requester.");
       }
       admitted = await (preparedAdmission ??= source.prepareSpawn(assertCurrent));
       assertCurrent();
@@ -289,35 +303,48 @@ export function createRequestNativeSubagentRuntime(
         }
         const toolCallId = randomUUID();
         const toolResult = await withCaller(() =>
-          runWithToolExecutionValidation(
-            toolCallId,
-            (finalParams) => {
-              assertCurrent();
-              const final = asOptionalRecord(finalParams);
-              // Hooks may rewrite the task, but not the native collector's completion contract.
-              if (
-                !final ||
-                final.runtime !== "subagent" ||
-                final.mode !== "run" ||
-                final.collect !== true ||
-                Reflect.get(final, SWARM_CODE_MODE_IDEMPOTENCY_KEY) !== replayKey ||
-                Reflect.get(final, SWARM_CODE_MODE_REQUEST_FINGERPRINT) !== fingerprint
-              ) {
-                throw new Error(
-                  "Native subagent hooks must preserve collector mode and replay identity.",
-                );
-              }
-            },
-            () =>
-              spawn.execute(
+          runWithJoinedCollectorSpawn(
+            spawn,
+            assertCurrent,
+            async () => {
+              bindJoinedCollectorInvocation(spawn, toolCallId);
+              return runWithToolExecutionValidation(
                 toolCallId,
-                {
-                  ...args,
-                  [SWARM_CODE_MODE_IDEMPOTENCY_KEY]: replayKey,
-                  [SWARM_CODE_MODE_REQUEST_FINGERPRINT]: fingerprint,
+                (finalParams) => {
+                  assertCurrent();
+                  const final = asOptionalRecord(finalParams);
+                  // Hooks may rewrite the task, but not the native collector's completion contract.
+                  if (
+                    !final ||
+                    final.runtime !== "subagent" ||
+                    final.mode !== "run" ||
+                    final.collect !== true ||
+                    Reflect.get(final, SWARM_CODE_MODE_IDEMPOTENCY_KEY) !== replayKey ||
+                    Reflect.get(final, SWARM_CODE_MODE_REQUEST_FINGERPRINT) !== fingerprint
+                  ) {
+                    throw new Error(
+                      "Native subagent hooks must preserve collector mode and replay identity.",
+                    );
+                  }
                 },
-                source.options.abortSignal,
-              ),
+                () =>
+                  spawn.execute(
+                    toolCallId,
+                    {
+                      ...args,
+                      [SWARM_CODE_MODE_IDEMPOTENCY_KEY]: replayKey,
+                      [SWARM_CODE_MODE_REQUEST_FINGERPRINT]: fingerprint,
+                    },
+                    source.options.abortSignal,
+                  ),
+              );
+            },
+            {
+              version: 1,
+              pluginId: guard.pluginId,
+              requesterProfileId: source.operatorAuthority.profileId,
+              requestId: params.requestId,
+            },
           ),
         );
         assertCurrent();
@@ -342,6 +369,55 @@ export function createRequestNativeSubagentRuntime(
       } finally {
         inFlightSpawns.delete(replayKey);
       }
+    },
+    async list(params) {
+      // Listing does not execute agents_wait, so prepare the current native policy
+      // rather than trusting the invocation's cached tool surface.
+      const config = getRuntimeConfig();
+      const assertPolicyCurrent = () => {
+        assertCurrent();
+        if (getRuntimeConfig() !== config) {
+          throw new Error("Native subagent tool policy changed; retry the listing.");
+        }
+      };
+      const surface = await tools(true);
+      assertPolicyCurrent();
+      if (!surface.some((tool) => tool.name === "agents_wait")) {
+        throw new Error("agents_wait is not available to the current requester.");
+      }
+      const records = await listSubagentRunsForRequester({
+        sessionKey: source.options.sessionKey,
+        agentId: source.options.agentId,
+        sessionId: source.options.sessionId,
+        lifecycleRevision: source.lifecycleRevision,
+      });
+      assertPolicyCurrent();
+      return records
+        .toSorted((a, b) => b.createdAt - a.createdAt || a.runId.localeCompare(b.runId))
+        .flatMap((entry) => {
+          const owner = entry.nativePluginOwner;
+          if (
+            entry.collect !== true ||
+            owner?.version !== 1 ||
+            owner.pluginId !== guard.pluginId ||
+            owner.requesterProfileId !== source.operatorAuthority.profileId ||
+            typeof owner.requestId !== "string" ||
+            owner.requestId.trim().length === 0
+          ) {
+            return [];
+          }
+          return [
+            {
+              runId: entry.swarmRunId ?? entry.runId,
+              childSessionKey: entry.childSessionKey,
+              requestId: owner.requestId,
+              ...(entry.label !== undefined ? { label: entry.label } : {}),
+              status: entry.collectorCompletion?.status ?? entry.execution.status,
+            },
+          ];
+        })
+        .filter((entry) => params?.status === undefined || entry.status === params.status)
+        .slice(0, 200);
     },
     async collect(params) {
       const surface = await tools();
