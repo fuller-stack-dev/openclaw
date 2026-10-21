@@ -64,13 +64,16 @@ export async function resolveCommandNativeSubagentEligibility(params: {
     !params.ingressEligible ||
     params.command?.requireAuth !== true ||
     !params.command.runtimeCapabilities?.includes("subagents")
-  )
+  ) {
     return undefined;
+  }
   params.assertCurrent();
   const owner = await params.authorizeRequester();
   params.assertCurrent();
   owner.assertOwnerCurrent?.();
-  if (!owner.isAuthorizedSender) return undefined;
+  if (!owner.isAuthorizedSender) {
+    return undefined;
+  }
   try {
     const runtime = await params.prepare(owner);
     params.assertCurrent();
@@ -101,7 +104,9 @@ export async function withRequesterNativeSubagents<T>(
         ),
       );
       if (!sessionKey || !entry?.sessionId || !runId || !operatorAuthority) {
-        if (state.commandIngressEligible !== undefined) return undefined;
+        if (state.commandIngressEligible !== undefined) {
+          return undefined;
+        }
         throw new Error(
           "Native subagents require an admitted requester session, turn, and operator authority.",
         );
@@ -175,8 +180,9 @@ export async function withRequesterNativeSubagents<T>(
                 const scope = getPluginRuntimeGatewayRequestScope();
                 const resolveGatewayContext =
                   scope?.resolveGatewayContext ?? scope?.context?.resolveGatewayContext;
-                if (!resolveGatewayContext)
+                if (!resolveGatewayContext) {
                   throw new Error("Native subagent controller requires its Gateway binding.");
+                }
                 admission = prepareChannelRunAdmission({
                   cfg,
                   runId,
@@ -197,8 +203,9 @@ export async function withRequesterNativeSubagents<T>(
           },
           guard,
         );
-        if (state.commandIngressEligible !== undefined && !(await runtime.prepareCommand()))
+        if (state.commandIngressEligible !== undefined && !(await runtime.prepareCommand())) {
           return undefined;
+        }
         assertCurrent();
         return {
           spawn: (params) => runtime.spawn(params),

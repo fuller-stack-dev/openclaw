@@ -84,6 +84,7 @@ afterEach(() => {
 describe("cold restart recovery of native operator input", () => {
   it.each([
     "native source",
+    "declaring plugin loaded",
     "native steering",
     "peer follow-up",
     "requester continuation after cohort settlement",
@@ -146,22 +147,25 @@ describe("cold restart recovery of native operator input", () => {
         ],
       });
       setRuntimeConfigSnapshot(config);
-      const builder = createTestPluginRegistry();
-      const record = createOwnershipRecord("recovery-native-command", {
-        contracts: { commandRuntimeCapabilities: ["subagents"] },
-      });
-      const commandHandler = vi.fn(() => ({ text: "Recovery must not invoke this command" }));
-      builder.createApi(record, { config }).registerCommand({
-        name: "pstack-recovery-probe",
-        description: "Probe command isolation from restart recovery",
-        requireAuth: true,
-        runtimeCapabilities: ["subagents"],
-        handler: commandHandler,
-      });
-      builder.registry.plugins.push(record);
-      expect(builder.registry.commands).toHaveLength(1);
-      setTestPluginRegistry(builder.registry);
-      initializeGlobalHookRunner(builder.registry);
+      if (scenario === "declaring plugin loaded") {
+        // An additional plain-text recovery case proves compatibility with a
+        // declaring command present, not recovery/replay of a command handler.
+        const builder = createTestPluginRegistry();
+        const record = createOwnershipRecord("recovery-native-command", {
+          contracts: { commandRuntimeCapabilities: ["subagents"] },
+        });
+        builder.createApi(record, { config }).registerCommand({
+          name: "pstack-recovery-probe",
+          description: "Probe command presence during plain-text restart recovery",
+          requireAuth: true,
+          runtimeCapabilities: ["subagents"],
+          handler: () => ({ text: "Command handler is separate from agent recovery" }),
+        });
+        builder.registry.plugins.push(record);
+        expect(builder.registry.commands).toHaveLength(1);
+        setTestPluginRegistry(builder.registry);
+        initializeGlobalHookRunner(builder.registry);
+      }
       const cronStorePath = path.join(state.stateDir, "cron", "jobs.json");
       const cron = new CronService({
         scheduler: createTestGatewayScheduler(),

@@ -196,19 +196,32 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
           }
           const closing = new AbortController();
           const closingNative = makeNative("native-test", "parent-session", closing.signal);
+          const metadataEntered = createDeferred();
+          const releaseMetadata = createDeferred();
           const closingMetadata = vi
             .spyOn(subagentSessionReconciliation, "loadSubagentSessionEntry")
             .mockImplementationOnce(async () => {
+              metadataEntered.resolve();
+              await releaseMetadata.promise;
               closing.abort(new Error("invocation closed during optional metadata read"));
               throw closing.signal.reason;
             });
           try {
-            // A native acceptance remains addressable even if descriptive reads are cancelled.
-            expect(await closingNative.spawn(request)).toMatchObject({
+            const closingSpawns = Promise.all([
+              closingNative.spawn(request),
+              closingNative.spawn(request),
+            ]);
+            await metadataEntered.promise;
+            releaseMetadata.resolve();
+            // Acceptance stays addressable to both callers when optional metadata closes.
+            const receipts = await closingSpawns;
+            expect(receipts).toEqual([receipts[0], receipts[0]]);
+            expect(receipts[0]).toMatchObject({
               runId: accepted.runId,
               childSessionKey: accepted.childSessionKey,
               selection: { requested: accepted.selection?.requested },
             });
+            expect(closingMetadata).toHaveBeenCalledTimes(1);
             await expect(closingNative.spawn(request)).rejects.toThrow("invocation closed");
           } finally {
             closingMetadata.mockRestore();
