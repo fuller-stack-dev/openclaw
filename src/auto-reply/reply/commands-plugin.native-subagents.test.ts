@@ -147,7 +147,16 @@ async function withCommandPlugin(
       const value = buildCommandTestParams(
         body,
         cfg,
-        { ...inbound, Body: body, CommandBody: body, RawBody: body },
+        {
+          ...inbound,
+          Body: body,
+          CommandBody: body,
+          RawBody: body,
+          // The fixture ingress was created with plain text; project this as the
+          // authenticated command turn, as real command dispatch does.
+          CommandAuthorized: true,
+          CommandTurn: undefined,
+        },
         { workspaceDir: state.workspaceDir },
       );
       value.sessionKey = sessionKey;

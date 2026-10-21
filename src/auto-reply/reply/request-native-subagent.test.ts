@@ -38,9 +38,15 @@ describe("command native subagent eligibility", () => {
     "does not prepare an ineligible %s",
     async (missing) => {
       const params = fixture();
-      if (missing === "ingress") params.ingressEligible = false;
-      if (missing === "authentication") params.command.requireAuth = false;
-      if (missing === "declaration") params.command.runtimeCapabilities = [];
+      if (missing === "ingress") {
+        params.ingressEligible = false;
+      }
+      if (missing === "authentication") {
+        params.command.requireAuth = false;
+      }
+      if (missing === "declaration") {
+        params.command.runtimeCapabilities = [];
+      }
       await expect(resolveCommandNativeSubagentEligibility(params)).resolves.toBeUndefined();
       expect(params.authorizeRequester).not.toHaveBeenCalled();
       expect(params.prepare).not.toHaveBeenCalled();

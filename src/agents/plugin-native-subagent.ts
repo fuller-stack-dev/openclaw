@@ -242,9 +242,9 @@ export function createRequestNativeSubagentRuntime(
         throw new Error("Native subagent replay does not match the admitted request.");
       }
       if (inFlight) {
-        const accepted = await inFlight.result;
-        assertCurrent();
-        return accepted;
+        // The shared result still checks authority before acceptance. Once accepted,
+        // descriptive-read cancellation cannot hide native IDs from joining callers.
+        return await inFlight.result;
       }
       const result = (async (): Promise<NativeSubagentAccepted> => {
         let existing = await getSwarmRunByLaunchReplayKey(
@@ -386,7 +386,9 @@ export function createRequestNativeSubagentRuntime(
           );
           assertCurrent();
           const read = prepared.consume((runs) => new Map(runs));
-          if (read.ready) records = read.value;
+          if (read.ready) {
+            records = read.value;
+          }
         } catch {
           // Completion is authoritative even when optional metadata is unavailable.
         }

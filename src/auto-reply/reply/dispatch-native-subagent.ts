@@ -68,7 +68,9 @@ function requesterState(state: NativeSubagentDispatchState) {
       await state.turnAdoption?.adopt();
       assertCurrent();
       const recorder = replyOptions?.userTurnTranscriptRecorder;
-      if (!entry?.sessionId || !recorder || !(await recorder.resolveMessage())) return false;
+      if (!entry?.sessionId || !recorder || !(await recorder.resolveMessage())) {
+        return false;
+      }
       assertCurrent();
       await recorder.persistApproved({
         expectedSessionId: entry.sessionId,
