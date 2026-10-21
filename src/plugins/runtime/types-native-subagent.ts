@@ -66,7 +66,7 @@ export type NativeSubagentRuntime = {
   ): Promise<NativeSubagentChild[]>;
 };
 
-export type NativeSubagentChild = {
+type NativeSubagentChild = {
   runId: string;
   childSessionKey: string;
   requestId: string;

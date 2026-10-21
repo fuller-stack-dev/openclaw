@@ -7,7 +7,7 @@ import { createRuntimeSystem } from "./runtime-system.js";
 import type { PluginRuntimeBase, PluginRuntime } from "./types.js";
 
 export const COMMAND_NATIVE_SUBAGENTS_CAPABILITY = "command-native-subagents-v1";
-export const NATIVE_SUBAGENT_LIST_CAPABILITY = "native-subagent-list-v1";
+const NATIVE_SUBAGENT_LIST_CAPABILITY = "native-subagent-list-v1";
 
 function unavailable(method: string): () => never {
   return () => {
