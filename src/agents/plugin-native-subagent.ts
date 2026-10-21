@@ -5,6 +5,7 @@ import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-
 import type {
   NativeSubagentAccepted,
   NativeSubagentRuntime,
+  NativeSubagentSelection,
 } from "../plugins/runtime/types-native-subagent.js";
 import { normalizeAcceptedSessionSpawnResult } from "./accepted-session-spawn.js";
 import type { AdmittedRunContext, AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
@@ -15,7 +16,9 @@ import { matchesSubagentRequesterSession } from "./subagents/registry/subagent-r
 import {
   getSwarmRunByLaunchReplayKey,
   initSubagentRegistry,
+  prepareSubagentRunsByRunIds,
 } from "./subagents/registry/subagent-registry.js";
+import { loadSubagentSessionEntry } from "./subagents/registry/subagent-session-reconciliation.js";
 import {
   SWARM_CODE_MODE_IDEMPOTENCY_KEY,
   SWARM_CODE_MODE_REQUEST_FINGERPRINT,
@@ -46,7 +49,7 @@ export type NativeSubagentRequestSource = {
 export function createRequestNativeSubagentRuntime(
   source: NativeSubagentRequestSource,
   guard: { pluginId: string; assertCurrent: () => void },
-): NativeSubagentRuntime {
+): NativeSubagentRuntime & { prepareCommand: () => Promise<boolean> } {
   const scope = getPluginRuntimeGatewayRequestScope();
   const resolveGatewayContext =
     scope?.resolveGatewayContext ?? scope?.context?.resolveGatewayContext;
@@ -61,6 +64,67 @@ export function createRequestNativeSubagentRuntime(
     if (!resolveGatewayContext()) {
       throw new Error("Native subagent Gateway binding is no longer active.");
     }
+  };
+  const readSelection = async (
+    runId: string,
+    childSessionKey: string,
+    requested: NativeSubagentSelection["requested"] = {},
+  ): Promise<NativeSubagentSelection> => {
+    assertCurrent();
+    let record;
+    try {
+      const prepared = await prepareSubagentRunsByRunIds([runId]);
+      assertCurrent();
+      const read = prepared.consume((runs) => runs.get(runId));
+      record = read.ready ? read.value : undefined;
+    } catch {
+      assertCurrent();
+      return { requested };
+    }
+    if (
+      !record?.collect ||
+      record.childSessionKey !== childSessionKey ||
+      record.requesterSessionKey !== source.options.sessionKey ||
+      !matchesSubagentRequesterSession(record, {
+        sessionId: source.options.sessionId,
+        lifecycleRevision: source.lifecycleRevision,
+      })
+    ) {
+      return { requested };
+    }
+    // Optional descriptive reads cannot undo a native acceptance or completion.
+    // In particular, neither tool-result hooks nor request echoes establish resolution.
+    let child;
+    try {
+      child = await loadSubagentSessionEntry({
+        childSessionKey,
+        childAgentId: record.childAgentId,
+        cfg: source.options.config,
+        assertCurrent,
+      });
+    } catch {
+      assertCurrent();
+      return { requested };
+    }
+    assertCurrent();
+    const identity = record.childSessionIdentity;
+    if (
+      !child ||
+      !identity ||
+      child.sessionId !== identity.sessionId ||
+      child.lifecycleRevision !== identity.lifecycleRevision
+    ) {
+      return { requested };
+    }
+    const resolved: NonNullable<NativeSubagentSelection["resolved"]> = {
+      ...(child.modelProvider && child.model
+        ? { model: `${child.modelProvider}/${child.model}` }
+        : {}),
+      ...(child.thinkingLevel !== undefined ? { thinking: child.thinkingLevel } : {}),
+      ...(child.fastMode !== undefined ? { fastMode: child.fastMode } : {}),
+    };
+    // Session controls are not provider telemetry: do not infer observed facts.
+    return { requested, ...(Object.keys(resolved).length > 0 ? { resolved } : {}) };
   };
   let admitted: AdmittedRunContext | undefined;
   let preparedAdmission: Promise<AdmittedRunContext> | undefined;
@@ -115,6 +179,18 @@ export function createRequestNativeSubagentRuntime(
     return result;
   };
   return {
+    async prepareCommand() {
+      const surface = await tools();
+      if (
+        !surface.some((tool) => tool.name === "sessions_spawn") ||
+        !surface.some((tool) => tool.name === "agents_wait")
+      ) {
+        return false;
+      }
+      admitted = await (preparedAdmission ??= source.prepareSpawn(assertCurrent));
+      assertCurrent();
+      return true;
+    },
     async spawn(params) {
       assertCurrent();
       if (!params.requestId?.trim()) {
@@ -141,6 +217,11 @@ export function createRequestNativeSubagentRuntime(
         runtime: "subagent",
         mode: "run",
         collect: true,
+      };
+      const requested: NativeSubagentSelection["requested"] = {
+        ...(args.model !== undefined ? { model: args.model } : {}),
+        ...(args.thinking !== undefined ? { thinking: args.thinking } : {}),
+        ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
       };
       const replayKey = createHash("sha256")
         .update(
@@ -200,6 +281,7 @@ export function createRequestNativeSubagentRuntime(
             runId: existing.swarmRunId ?? existing.runId,
             childSessionKey: existing.childSessionKey,
             completionMode: "collect",
+            selection: await readSelection(existing.runId, existing.childSessionKey, requested),
           };
         }
         const toolCallId = randomUUID();
@@ -248,6 +330,7 @@ export function createRequestNativeSubagentRuntime(
           runId: accepted.runId,
           childSessionKey: accepted.childSessionKey,
           completionMode: "collect",
+          selection: await readSelection(accepted.runId, accepted.childSessionKey, requested),
         };
       })();
       inFlightSpawns.set(replayKey, { fingerprint, result });
@@ -293,7 +376,15 @@ export function createRequestNativeSubagentRuntime(
         ),
       );
       assertCurrent();
-      return readNativeSubagentCollection(result.details);
+      const collection = readNativeSubagentCollection(result.details);
+      const completed = await Promise.all(
+        collection.completed.map(async (completion) => ({
+          ...completion,
+          selection: await readSelection(completion.runId, completion.sessionKey),
+        })),
+      );
+      assertCurrent();
+      return { ...collection, completed };
     },
   };
 }

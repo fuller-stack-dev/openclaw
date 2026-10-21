@@ -2,7 +2,17 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { NativeSubagentRuntime } from "./types-native-subagent.js";
 
-type RuntimeGuard = { pluginId: string; assertCurrent: () => void; signal?: AbortSignal };
+export type NativeSubagentRuntimeGuard = {
+  pluginId: string;
+  assertCurrent: () => void;
+  signal?: AbortSignal;
+};
+type RuntimeGuard = NativeSubagentRuntimeGuard;
+
+/** Core-only command factory; plugins cannot supply a requester or operator authority. */
+export type NativeSubagentCommandFactory = (
+  guard: NativeSubagentRuntimeGuard,
+) => Promise<NativeSubagentRuntime | undefined>;
 type RequestScope = {
   active: boolean;
   abort: AbortController;
@@ -34,7 +44,7 @@ export async function withNativeSubagentRequest<T>(
       return await run();
     } finally {
       scope.active = false;
-      scope.abort.abort(new Error("Native subagent hook invocation ended."));
+      scope.abort.abort(new Error("Native subagent invocation ended."));
       scope.runtimes.clear();
     }
   });
@@ -48,9 +58,7 @@ async function currentRuntime(): Promise<NativeSubagentRuntime> {
   const scope = requestScope.getStore();
   const guard = runtimeGuard.getStore();
   if (!scope?.active || !guard) {
-    throw new Error(
-      "Native subagents require an active requester-bound reply_dispatch invocation.",
-    );
+    throw new Error("Native subagents require an active requester-bound invocation.");
   }
   guard.assertCurrent();
   let runtime = scope.runtimes.get(guard.pluginId);

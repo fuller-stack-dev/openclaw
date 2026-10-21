@@ -23,6 +23,9 @@ import {
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
+import { initializeGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import { createOwnershipRecord } from "../plugins/registry-ownership.test-support.js";
+import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { withPluginRuntimeGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import * as sessionLifecycle from "../sessions/session-controller.lifecycle.js";
 import { listRpcSourceEntries } from "../sessions/session-controller.rpc-sources.js";
@@ -69,6 +72,7 @@ import {
   testState,
   writeSessionStore,
 } from "./test-helpers.js";
+import { setTestPluginRegistry } from "./test-helpers.plugin-registry.js";
 import { releaseGatewaySessionStoreFixture } from "./test/server-sessions-resources.test-helpers.js";
 import { loseSessionSignalAcknowledgement } from "./test/session-signal-failure.test-support.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
@@ -867,7 +871,24 @@ describe("Goal chat admission and continuation", () => {
   });
 
   it.each(["paused", "complete"] as const)("resumes %s Goals once", async (status) => {
-    const objective = "Finish the release checklist";
+    const builder = createTestPluginRegistry();
+    const record = createOwnershipRecord("goal-native-command", {
+      contracts: { commandRuntimeCapabilities: ["subagents"] },
+    });
+    const commandHandler = vi.fn(() => ({ text: "A literal Goal must not invoke this command" }));
+    builder.createApi(record, { config: getRuntimeConfig() }).registerCommand({
+      name: "pstack-goal-probe",
+      description: "Probe command isolation from Goals",
+      requireAuth: true,
+      runtimeCapabilities: ["subagents"],
+      handler: commandHandler,
+    });
+    builder.registry.plugins.push(record);
+    expect(builder.registry.commands).toHaveLength(1);
+    setTestPluginRegistry(builder.registry);
+    initializeGlobalHookRunner(builder.registry);
+    await prepareGatewayReplyRuntimeForTest({ force: true });
+    const objective = "/pstack-goal-probe Finish the release checklist";
     const profile = ensureProfileForEmail("goal-participant@example.test");
     const requestClient = profileClient(profile.id);
     const participants = () => listSessionParticipantsReadOnly(scope()).get(sessionKey) ?? [];
@@ -932,7 +953,11 @@ describe("Goal chat admission and continuation", () => {
     }
     expect(resumed).toHaveBeenCalledWith(
       true,
-      expect.objectContaining({ status: "started", runId: request.operationId, goalId: goal?.id }),
+      expect.objectContaining({
+        status: "started",
+        runId: request.operationId,
+        goalId: goal?.id,
+      }),
       undefined,
       expect.anything(),
     );
@@ -963,10 +988,14 @@ describe("Goal chat admission and continuation", () => {
       expect.objectContaining({ content: objective }),
     ]);
     const replay = await rpc("sessions.goal.update", request, undefined, requestClient);
-    expect(replay.mock.calls[0]?.[1]).toMatchObject({ replayed: true, runId: request.operationId });
+    expect(replay.mock.calls[0]?.[1]).toMatchObject({
+      replayed: true,
+      runId: request.operationId,
+    });
     expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
     expect(userMessages()).toHaveLength(2);
     expect(participants()).toEqual(startParticipants);
+    expect(commandHandler).not.toHaveBeenCalled();
 
     modelStarted = createDeferred();
     const next = await rpc(

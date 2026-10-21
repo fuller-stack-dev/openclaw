@@ -49,6 +49,15 @@ export type ReplyRunVerbosity = {
 };
 
 type InternalReplySessionOptions = {
+  /** Dispatch-owned command requester binding; never part of the public plugin API. */
+  withCommandNativeSubagents?: <T>(
+    binding: { agentId: string; sessionKey: string; entry: SessionEntry },
+    run: (
+      create:
+        | import("../../plugins/runtime/native-subagent-context.js").NativeSubagentCommandFactory
+        | undefined,
+    ) => Promise<T>,
+  ) => Promise<T>;
   /** Settles attribution before tool effects; model preparation may run concurrently. */
   awaitSessionDiffBaseline?: () => Promise<void>;
   /** Producer callbacks follow this occurrence through queueing and delivery. */
