@@ -6,6 +6,8 @@ import { createRuntimeLlmFacade } from "./runtime-llm-facade.js";
 import { createRuntimeSystem } from "./runtime-system.js";
 import type { PluginRuntimeBase, PluginRuntime } from "./types.js";
 
+export const COMMAND_NATIVE_SUBAGENTS_CAPABILITY = "command-native-subagents-v1";
+
 function unavailable(method: string): () => never {
   return () => {
     throw new Error(`${method} is only available through the plugin runtime proxy.`);
@@ -18,7 +20,7 @@ export function createRuntimeBase(): PluginRuntimeBase {
   return {
     capabilities: Object.freeze([
       GATEWAY_SERVER_CAPS.SENDER_RESTRICTED_HIDDEN_HELPERS,
-      "command-native-subagents-v1",
+      COMMAND_NATIVE_SUBAGENTS_CAPABILITY,
     ]),
     config: createRuntimeConfig(),
     llm: createRuntimeLlmFacade(getRuntimeConfig),

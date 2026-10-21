@@ -6,6 +6,8 @@ export type NativeSubagentRuntimeGuard = {
   pluginId: string;
   assertCurrent: () => void;
   signal?: AbortSignal;
+  /** Host-selected command metadata, never plugin-supplied factory arguments. */
+  command?: { requireAuth?: boolean; runtimeCapabilities?: readonly string[] };
 };
 type RuntimeGuard = NativeSubagentRuntimeGuard;
 

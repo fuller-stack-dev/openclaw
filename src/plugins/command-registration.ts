@@ -333,11 +333,9 @@ export function registerPluginCommandInRegistry(
     return { ok: false, error: definitionError };
   }
 
-  const declaredCapabilities =
-    commandRuntimeCapabilities ??
-    registry.plugins.find((record) => record.id === pluginId)?.contracts
-      ?.commandRuntimeCapabilities ??
-    [];
+  // Only the managed registrar may supply its admitted manifest declaration.
+  // The deprecated direct registrar accepts a caller-supplied pluginId, not identity.
+  const declaredCapabilities = commandRuntimeCapabilities ?? [];
   const undeclared =
     command.runtimeCapabilities?.filter(
       (capability) => !declaredCapabilities.includes(capability),

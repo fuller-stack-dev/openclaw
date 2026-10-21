@@ -84,6 +84,13 @@ requester under `auto-reply.plugin-command`. Children inherit that requester’s
 lineage and effective tool ceiling. No new hook is registered, so Goal
 start/resume and restart-safe chat admission keep their existing rules.
 
+Channel messages without explicit provenance use the channel’s ordinary sender
+authorization; an authorized non-owner can spend child-model budget only under
+that requester’s tool ceiling. A native slash surface targeting a different
+`CommandTargetSessionKey` than the current dispatch session gets no capability.
+The deprecated direct command registrar cannot grant runtime capabilities; use
+the managed `api.registerCommand` path with its reviewed manifest declaration.
+
 The facade expires when the command settles; retained references fail closed.
 `/stop` aborts in-flight command calls. Accepted children retain native custody;
 store their IDs and collect in a later eligible invocation for the same parent

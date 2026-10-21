@@ -76,6 +76,10 @@ async function buildRuntimeContext(
     params.isAuthorizedSender
       ? await params.runtimeContext?.createSubagents?.({
           pluginId: command.pluginId,
+          command: {
+            requireAuth: command.requireAuth,
+            runtimeCapabilities: command.runtimeCapabilities,
+          },
           signal: invocationSignal,
           assertCurrent: assertInvocationCurrent,
         })

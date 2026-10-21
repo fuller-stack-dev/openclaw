@@ -1,6 +1,10 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it, vi } from "vitest";
-import { createDeferred } from "../../../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../../../test/helpers/promise.js";
 import { tryFastAbortFromMessage } from "../../../auto-reply/reply/abort.js";
 import { handlePluginCommand } from "../../../auto-reply/reply/commands-plugin.js";
 import { buildCommandTestParams } from "../../../auto-reply/reply/commands.test-harness.js";
@@ -28,7 +32,8 @@ import {
 
 /** Command dispatch must commit the actual user input before handing native authority to a plugin. */
 export function registerNativePluginCommandCases(options: NativePluginSpawnTestOptions) {
-  it("native command commits its turn, obeys /stop, and cannot collect across a real reset", async () => {
+  const stopCase = it.for(["after settlement", "during collect"] as const);
+  stopCase("native command /stop %s", async (stopTiming, { signal }) => {
     const source = createSpawnOperatorSource();
     const bound = await options.createBoundParent(source.authority);
     const { context, runtime } = await options.createBoundGateway(bound);
@@ -40,6 +45,9 @@ export function registerNativePluginCommandCases(options: NativePluginSpawnTestO
     });
     const failures: unknown[] = [];
     const capacityStarted = createDeferred();
+    const collectStarted = createDeferred();
+    let collectFailure: unknown;
+    let collectSettled = false;
     enqueueSwarmRun({
       groupId: JSON.stringify([
         "main",
@@ -92,6 +100,8 @@ export function registerNativePluginCommandCases(options: NativePluginSpawnTestO
           loadSessionEntry({ storePath: bound.storePath, sessionKey: child.childSessionKey }),
           "native child",
         );
+        expect(child.selection?.requested.model).toBe("custom/test-model");
+        expect(child.selection?.resolved?.model).toBe("custom/test-model");
         expect(child.selection?.resolved?.model).toBe(actual.modelProvider + "/" + actual.model);
         expect(actual.spawnedBy).toBe(parentSessionKey);
         expect(actual.inheritedToolAllow).toEqual(expect.arrayContaining(["read"]));
@@ -104,6 +114,19 @@ export function registerNativePluginCommandCases(options: NativePluginSpawnTestO
           completed: [],
           pending: [child.runId],
         });
+        if (stopTiming === "during collect") {
+          const collecting = native.collect({ ids: [child.runId], timeoutSeconds: 30 });
+          collectStarted.resolve();
+          try {
+            await collecting;
+            return { text: "review wait completed", continueAgent: true };
+          } catch (error) {
+            collectFailure = error;
+            return { text: "review aborted" };
+          } finally {
+            collectSettled = true;
+          }
+        }
         return { text: "review queued" };
       }
       expect(
@@ -204,18 +227,33 @@ export function registerNativePluginCommandCases(options: NativePluginSpawnTestO
           isWebchatConnect: () => false,
         },
         async () => {
-          expect(await invoke()).toEqual({
-            shouldContinue: false,
-            reply: { text: "review queued" },
-          });
-          await expect(
-            expectDefined(retained, "retained runtime").spawn({
-              requestId: "late",
-              task: "Must not run",
-            }),
-          ).rejects.toSatisfy((error: unknown) =>
-            String(error).includes("command invocation closed"),
-          );
+          const command = invoke();
+          if (stopTiming === "during collect") {
+            await withinTest(
+              awaitGateBeforeSettlement(
+                collectStarted.promise,
+                command,
+                "command settled before reaching its in-flight collect",
+              ),
+              signal,
+            );
+            expect(collectSettled).toBe(false);
+            expect(bound.parent.controller.signal.aborted).toBe(false);
+          } else {
+            expect(await command).toEqual({
+              shouldContinue: false,
+              reply: { text: "review queued" },
+            });
+            await expect(
+              expectDefined(retained, "retained runtime").spawn({
+                requestId: "late",
+                task: "Must not run",
+              }),
+            ).rejects.toSatisfy((error: unknown) =>
+              String(error).includes("command invocation closed"),
+            );
+          }
+          const stopStartedAt = performance.now();
           const stop = await tryFastAbortFromMessage({
             cfg: bound.cfg,
             ctx: buildTestCtx({
@@ -226,11 +264,38 @@ export function registerNativePluginCommandCases(options: NativePluginSpawnTestO
             }),
           });
           expect(stop).toMatchObject({ handled: true, stoppedSubagents: 1, failedSubagents: 0 });
+          if (stopTiming === "during collect") {
+            expect(stop.aborted).toBe(true);
+            expect(bound.parent.controller.signal.aborted).toBe(true);
+            expect(await withinTest(command, signal)).toEqual({
+              shouldContinue: false,
+              reply: { text: "review aborted" },
+            });
+            // Cancellation must settle the 30-second wait, not wait for its deadline.
+            expect(performance.now() - stopStartedAt).toBeLessThan(10_000);
+            expect(collectSettled).toBe(true);
+            expect(collectFailure).toMatchObject({ name: "AbortError" });
+            expect(await handler.mock.results[0]?.value).not.toHaveProperty("continueAgent");
+            const acceptedRunIds = [...subagentRuns.keys()];
+            await expect(
+              expectDefined(retained, "retained runtime").spawn({
+                requestId: "late-after-stop",
+                task: "Must not run after stop",
+              }),
+            ).rejects.toSatisfy((error: unknown) =>
+              String(error).includes("command invocation closed"),
+            );
+            expect([...subagentRuns.keys()]).toEqual(acceptedRunIds);
+          }
           expect(
             subagentRuns.get(expectDefined(childRunId, "stopped child"))?.collectorCompletion
               ?.status,
           ).toBe("killed");
           expect(options.runEmbeddedAgent).not.toHaveBeenCalled();
+          if (stopTiming === "during collect") {
+            expect(handler).toHaveBeenCalledTimes(1);
+            return;
+          }
           const before = expectDefined(
             loadSessionEntry({ storePath: bound.storePath, sessionKey: parentSessionKey }),
             "before reset",
