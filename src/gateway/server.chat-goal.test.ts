@@ -953,11 +953,7 @@ describe("Goal chat admission and continuation", () => {
     }
     expect(resumed).toHaveBeenCalledWith(
       true,
-      expect.objectContaining({
-        status: "started",
-        runId: request.operationId,
-        goalId: goal?.id,
-      }),
+      expect.objectContaining({ status: "started", runId: request.operationId, goalId: goal?.id }),
       undefined,
       expect.anything(),
     );
@@ -988,10 +984,7 @@ describe("Goal chat admission and continuation", () => {
       expect.objectContaining({ content: objective }),
     ]);
     const replay = await rpc("sessions.goal.update", request, undefined, requestClient);
-    expect(replay.mock.calls[0]?.[1]).toMatchObject({
-      replayed: true,
-      runId: request.operationId,
-    });
+    expect(replay.mock.calls[0]?.[1]).toMatchObject({ replayed: true, runId: request.operationId });
     expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
     expect(userMessages()).toHaveLength(2);
     expect(participants()).toEqual(startParticipants);

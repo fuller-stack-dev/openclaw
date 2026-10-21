@@ -17,6 +17,7 @@ import {
   getSwarmRunByLaunchReplayKey,
   initSubagentRegistry,
   prepareSubagentRunsByRunIds,
+  type SubagentRunRecord,
 } from "./subagents/registry/subagent-registry.js";
 import { loadSubagentSessionEntry } from "./subagents/registry/subagent-session-reconciliation.js";
 import {
@@ -69,62 +70,64 @@ export function createRequestNativeSubagentRuntime(
     runId: string,
     childSessionKey: string,
     requested: NativeSubagentSelection["requested"] = {},
+    records?: ReadonlyMap<string, SubagentRunRecord>,
   ): Promise<NativeSubagentSelection> => {
-    assertCurrent();
-    let record;
     try {
-      const prepared = await prepareSubagentRunsByRunIds([runId]);
       assertCurrent();
-      const read = prepared.consume((runs) => runs.get(runId));
-      record = read.ready ? read.value : undefined;
+      let record = records?.get(runId);
+      if (!records) {
+        const prepared = await prepareSubagentRunsByRunIds([runId]);
+        assertCurrent();
+        const read = prepared.consume((runs) => runs.get(runId));
+        record = read.ready ? read.value : undefined;
+      }
+      if (
+        !record?.collect ||
+        record.childSessionKey !== childSessionKey ||
+        record.requesterSessionKey !== source.options.sessionKey ||
+        !matchesSubagentRequesterSession(record, {
+          sessionId: source.options.sessionId,
+          lifecycleRevision: source.lifecycleRevision,
+        })
+      ) {
+        return { requested };
+      }
+      // Optional descriptive reads cannot undo a native acceptance or completion.
+      // In particular, neither tool-result hooks nor request echoes establish resolution.
+      let child;
+      try {
+        child = await loadSubagentSessionEntry({
+          childSessionKey,
+          childAgentId: record.childAgentId,
+          cfg: source.options.config,
+          assertCurrent,
+        });
+      } catch {
+        return { requested };
+      }
+      assertCurrent();
+      const identity = record.childSessionIdentity;
+      if (
+        !child ||
+        !identity ||
+        child.sessionId !== identity.sessionId ||
+        child.lifecycleRevision !== identity.lifecycleRevision
+      ) {
+        return { requested };
+      }
+      const resolved: NonNullable<NativeSubagentSelection["resolved"]> = {
+        ...(child.modelProvider && child.model
+          ? { model: `${child.modelProvider}/${child.model}` }
+          : {}),
+        ...(child.thinkingLevel !== undefined ? { thinking: child.thinkingLevel } : {}),
+        ...(child.fastMode !== undefined ? { fastMode: child.fastMode } : {}),
+      };
+      // Session controls are not provider telemetry: do not infer observed facts.
+      return { requested, ...(Object.keys(resolved).length > 0 ? { resolved } : {}) };
     } catch {
-      assertCurrent();
+      // Descriptive metadata cannot revoke IDs already transferred to native custody.
       return { requested };
     }
-    if (
-      !record?.collect ||
-      record.childSessionKey !== childSessionKey ||
-      record.requesterSessionKey !== source.options.sessionKey ||
-      !matchesSubagentRequesterSession(record, {
-        sessionId: source.options.sessionId,
-        lifecycleRevision: source.lifecycleRevision,
-      })
-    ) {
-      return { requested };
-    }
-    // Optional descriptive reads cannot undo a native acceptance or completion.
-    // In particular, neither tool-result hooks nor request echoes establish resolution.
-    let child;
-    try {
-      child = await loadSubagentSessionEntry({
-        childSessionKey,
-        childAgentId: record.childAgentId,
-        cfg: source.options.config,
-        assertCurrent,
-      });
-    } catch {
-      assertCurrent();
-      return { requested };
-    }
-    assertCurrent();
-    const identity = record.childSessionIdentity;
-    if (
-      !child ||
-      !identity ||
-      child.sessionId !== identity.sessionId ||
-      child.lifecycleRevision !== identity.lifecycleRevision
-    ) {
-      return { requested };
-    }
-    const resolved: NonNullable<NativeSubagentSelection["resolved"]> = {
-      ...(child.modelProvider && child.model
-        ? { model: `${child.modelProvider}/${child.model}` }
-        : {}),
-      ...(child.thinkingLevel !== undefined ? { thinking: child.thinkingLevel } : {}),
-      ...(child.fastMode !== undefined ? { fastMode: child.fastMode } : {}),
-    };
-    // Session controls are not provider telemetry: do not infer observed facts.
-    return { requested, ...(Object.keys(resolved).length > 0 ? { resolved } : {}) };
   };
   let admitted: AdmittedRunContext | undefined;
   let preparedAdmission: Promise<AdmittedRunContext> | undefined;
@@ -335,9 +338,7 @@ export function createRequestNativeSubagentRuntime(
       })();
       inFlightSpawns.set(replayKey, { fingerprint, result });
       try {
-        const accepted = await result;
-        assertCurrent();
-        return accepted;
+        return await result;
       } finally {
         inFlightSpawns.delete(replayKey);
       }
@@ -377,13 +378,25 @@ export function createRequestNativeSubagentRuntime(
       );
       assertCurrent();
       const collection = readNativeSubagentCollection(result.details);
+      let records: ReadonlyMap<string, SubagentRunRecord> = new Map();
+      if (collection.completed.length > 0) {
+        try {
+          const prepared = await prepareSubagentRunsByRunIds(
+            collection.completed.map((item) => item.runId),
+          );
+          assertCurrent();
+          const read = prepared.consume((runs) => new Map(runs));
+          if (read.ready) records = read.value;
+        } catch {
+          // Completion is authoritative even when optional metadata is unavailable.
+        }
+      }
       const completed = await Promise.all(
         collection.completed.map(async (completion) => ({
           ...completion,
-          selection: await readSelection(completion.runId, completion.sessionKey),
+          selection: await readSelection(completion.runId, completion.sessionKey, {}, records),
         })),
       );
-      assertCurrent();
       return { ...collection, completed };
     },
   };

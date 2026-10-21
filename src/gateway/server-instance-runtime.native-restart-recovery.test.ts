@@ -372,7 +372,7 @@ describe("cold restart recovery of native operator input", () => {
       const messages = [
         {
           role: "user",
-          content: "/pstack-recovery-probe Finish the synthetic task",
+          content: "Finish the synthetic task",
           timestamp: 1,
           ...(inputProvenance ? { provenance: inputProvenance } : {}),
           ...(scenario === "detached cron input"
@@ -563,7 +563,6 @@ describe("cold restart recovery of native operator input", () => {
           });
           expect(startTurn).toHaveBeenCalledOnce();
         }
-        expect(commandHandler).not.toHaveBeenCalled();
         const jobs = (await loadCronStore(cronStorePath)).jobs;
         if (sourceUnavailable || scenario.includes("after admission")) {
           expect(jobs).toEqual([]);

@@ -64,11 +64,15 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
         async () => {
           const { createRequestNativeSubagentRuntime } =
             await import("../../plugin-native-subagent.js");
-          const makeNative = (pluginId = "native-test", sessionId = "parent-session") =>
-            createRequestNativeSubagentRuntime(nativeRequestSource(bound, source, { sessionId }), {
-              pluginId,
-              assertCurrent: source.authority.assertCurrent,
-            });
+          const makeNative = (
+            pluginId = "native-test",
+            sessionId = "parent-session",
+            abortSignal?: AbortSignal,
+          ) =>
+            createRequestNativeSubagentRuntime(
+              nativeRequestSource(bound, source, { sessionId, abortSignal }),
+              { pluginId, assertCurrent: source.authority.assertCurrent },
+            );
           const native = makeNative();
           const request = {
             requestId: "review",
@@ -147,6 +151,25 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
             });
           } finally {
             unreadableChild.mockRestore();
+          }
+          const closing = new AbortController();
+          const closingNative = makeNative("native-test", "parent-session", closing.signal);
+          const closingMetadata = vi
+            .spyOn(subagentSessionReconciliation, "loadSubagentSessionEntry")
+            .mockImplementationOnce(async () => {
+              closing.abort(new Error("invocation closed during optional metadata read"));
+              throw closing.signal.reason;
+            });
+          try {
+            // A native acceptance remains addressable even if descriptive reads are cancelled.
+            expect(await closingNative.spawn(request)).toMatchObject({
+              runId: accepted.runId,
+              childSessionKey: accepted.childSessionKey,
+              selection: { requested: accepted.selection?.requested },
+            });
+            await expect(closingNative.spawn(request)).rejects.toThrow("invocation closed");
+          } finally {
+            closingMetadata.mockRestore();
           }
           await expect(native.spawn({ ...request, task: "different task" })).rejects.toThrow();
           const entry = loadSessionEntry({
@@ -434,13 +457,7 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
               resolved: { model: "custom/test-model", fastMode: false },
             });
             expect(result).toMatchObject({
-              completed: [
-                {
-                  runId: childRunId,
-                  status: "done",
-                  result: "host child complete",
-                },
-              ],
+              completed: [{ runId: childRunId, status: "done", result: "host child complete" }],
               pending: [],
             });
           });
