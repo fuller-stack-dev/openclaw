@@ -16,7 +16,10 @@ function unavailable(method: string): () => never {
 export function createRuntimeBase(): PluginRuntimeBase {
   let system: PluginRuntime["system"] | undefined;
   return {
-    capabilities: Object.freeze([GATEWAY_SERVER_CAPS.SENDER_RESTRICTED_HIDDEN_HELPERS]),
+    capabilities: Object.freeze([
+      GATEWAY_SERVER_CAPS.SENDER_RESTRICTED_HIDDEN_HELPERS,
+      "command-native-subagents-v1",
+    ]),
     config: createRuntimeConfig(),
     llm: createRuntimeLlmFacade(getRuntimeConfig),
     // Only the registry proxy grants storage, never the base runtime directly.

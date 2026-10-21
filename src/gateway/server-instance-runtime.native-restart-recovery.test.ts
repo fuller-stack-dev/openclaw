@@ -26,6 +26,12 @@ import {
   rotateAgentEventLifecycleGeneration,
 } from "../infra/agent-events.js";
 import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../plugins/hook-runner-global.js";
+import { createOwnershipRecord } from "../plugins/registry-ownership.test-support.js";
+import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
+import {
   bindGatewayContextResolver,
   clearGatewayContextResolver,
   withPluginRuntimeGatewayRequestScope,
@@ -55,6 +61,7 @@ import {
   createCreatorTransportTools,
 } from "./server-methods/requester-cron-authority.test-support.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
+import { resetTestPluginRegistry, setTestPluginRegistry } from "./test-helpers.plugin-registry.js";
 
 const startTurn = vi.hoisted(() => vi.fn<ReturnType<typeof createAgentTurnService>["startTurn"]>());
 
@@ -71,6 +78,8 @@ afterEach(() => {
   startTurn.mockReset();
   vi.restoreAllMocks();
   resetAgentEventsForTest();
+  resetGlobalHookRunner();
+  resetTestPluginRegistry();
 });
 
 describe("cold restart recovery of native operator input", () => {
@@ -257,6 +266,22 @@ describe("cold restart recovery of native operator input", () => {
         ],
       });
       setRuntimeConfigSnapshot(config);
+      const builder = createTestPluginRegistry();
+      const record = createOwnershipRecord("recovery-native-command", {
+        contracts: { commandRuntimeCapabilities: ["subagents"] },
+      });
+      const commandHandler = vi.fn(() => ({ text: "Recovery must not invoke this command" }));
+      builder.createApi(record, { config }).registerCommand({
+        name: "pstack-recovery-probe",
+        description: "Probe command isolation from restart recovery",
+        requireAuth: true,
+        runtimeCapabilities: ["subagents"],
+        handler: commandHandler,
+      });
+      builder.registry.plugins.push(record);
+      expect(builder.registry.commands).toHaveLength(1);
+      setTestPluginRegistry(builder.registry);
+      initializeGlobalHookRunner(builder.registry);
       const cronStorePath = path.join(state.stateDir, "cron", "jobs.json");
       const cron = new CronService({
         scheduler: createTestGatewayScheduler(),
@@ -347,7 +372,7 @@ describe("cold restart recovery of native operator input", () => {
       const messages = [
         {
           role: "user",
-          content: "Finish the synthetic task",
+          content: "/pstack-recovery-probe Finish the synthetic task",
           timestamp: 1,
           ...(inputProvenance ? { provenance: inputProvenance } : {}),
           ...(scenario === "detached cron input"
@@ -538,6 +563,7 @@ describe("cold restart recovery of native operator input", () => {
           });
           expect(startTurn).toHaveBeenCalledOnce();
         }
+        expect(commandHandler).not.toHaveBeenCalled();
         const jobs = (await loadCronStore(cronStorePath)).jobs;
         if (sourceUnavailable || scenario.includes("after admission")) {
           expect(jobs).toEqual([]);

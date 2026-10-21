@@ -20,8 +20,10 @@ import {
 import { finalizeAgentTools } from "../../agent-tools.finalize.js";
 import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
+import * as subagentSessionReconciliation from "../registry/subagent-session-reconciliation.js";
 import { holdQueuedSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
 import { visibleResult } from "./subagent-spawn.fixtures.test-support.js";
+import { registerNativePluginCommandCases } from "./subagent-spawn.plugin-command.test-support.js";
 import {
   holdNativeCapacity,
   installNativeToolHook,
@@ -45,6 +47,7 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
     throwBoundFailures,
     runEmbeddedAgent,
   } = options;
+  registerNativePluginCommandCases(options);
   registerNativePluginRewriteCases(options);
   registerNativePluginSandboxCases(options);
   it("native plugin facade keeps native IDs, exact overrides, parent custody and requester policy", async () => {
@@ -70,7 +73,7 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
           const request = {
             requestId: "review",
             task: "Review the implementation",
-            model: "custom/test-model",
+            model: "custom/requested-model",
             thinking: "high",
             fastMode: "ultrafast" as const,
             context: "isolated" as const,
@@ -81,7 +84,9 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
             if (event.toolName === "sessions_spawn") {
               entered.resolve();
               await release.promise;
+              return { params: { model: "custom/test-model", thinking: "low", fastMode: false } };
             }
+            return undefined;
           });
           installNativeToolHook("test-plugin", beforeSpawn);
           const pending = Promise.allSettled([
@@ -119,8 +124,30 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
             runId: expect.any(String),
             childSessionKey: expect.any(String),
             completionMode: "collect",
+            selection: {
+              requested: {
+                model: "custom/requested-model",
+                thinking: "high",
+                fastMode: "ultrafast",
+              },
+              resolved: { model: "custom/test-model", thinking: "low", fastMode: false },
+            },
           });
           expect(await native.spawn(request)).toEqual(accepted);
+          const unreadableChild = vi
+            .spyOn(subagentSessionReconciliation, "loadSubagentSessionEntry")
+            .mockRejectedValueOnce(new Error("child metadata unavailable"));
+          try {
+            expect((await native.spawn(request)).selection).toEqual({
+              requested: {
+                model: "custom/requested-model",
+                thinking: "high",
+                fastMode: "ultrafast",
+              },
+            });
+          } finally {
+            unreadableChild.mockRestore();
+          }
           await expect(native.spawn({ ...request, task: "different task" })).rejects.toThrow();
           const entry = loadSessionEntry({
             storePath: bound.storePath,
@@ -131,8 +158,8 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
             spawnDepth: 2,
             modelOverride: "test-model",
             providerOverride: "custom",
-            thinkingLevel: "high",
-            fastMode: "ultrafast",
+            thinkingLevel: "low",
+            fastMode: false,
             inheritedToolAllow: expect.arrayContaining(["read"]),
           });
           expect(subagentRuns.get(childRunId)).toMatchObject({
@@ -297,6 +324,7 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
           const request = {
             requestId: "host-review",
             task: "Review host input",
+            fastMode: false,
             context: "isolated" as const,
           };
           const [child, replay] = await Promise.all([
@@ -401,8 +429,18 @@ export function registerNativePluginSpawnCases(options: NativePluginSpawnTestOpt
               ids: [acceptedRunId],
               awaitResults: true,
             });
+            expect(result.completed[0]?.selection).toEqual({
+              requested: {},
+              resolved: { model: "custom/test-model", fastMode: false },
+            });
             expect(result).toMatchObject({
-              completed: [{ runId: childRunId, status: "done", result: "host child complete" }],
+              completed: [
+                {
+                  runId: childRunId,
+                  status: "done",
+                  result: "host child complete",
+                },
+              ],
               pending: [],
             });
           });
