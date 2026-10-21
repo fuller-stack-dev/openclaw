@@ -64,7 +64,9 @@ async function buildRuntimeContext(
     return undefined;
   }
   const pluginAuthority = capturePluginLifecycleAuthority(
-    registry, registry.plugins.find((record) => record.id === command.pluginId), { scopedRuntime: true },
+    registry,
+    registry.plugins.find((record) => record.id === command.pluginId),
+    { scopedRuntime: true },
   );
   const assertInvocationCurrent = () => {
     invocationSignal.throwIfAborted();
@@ -93,7 +95,12 @@ async function buildRuntimeContext(
   return {
     ...(subagents ? { subagents } : {}),
     ...(command.runtimeCapabilities?.includes("models") && params.isAuthorizedSender
-      ? { models: params.runtimeContext?.createModels?.({ signal: invocationSignal, assertCurrent: assertInvocationCurrent }) }
+      ? {
+          models: params.runtimeContext?.createModels?.({
+            signal: invocationSignal,
+            assertCurrent: assertInvocationCurrent,
+          }),
+        }
       : {}),
     llm: {
       complete: async (request) => {

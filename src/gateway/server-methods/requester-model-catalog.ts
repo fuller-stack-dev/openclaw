@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
-import type { ModelsListResult } from "../../../packages/gateway-protocol/src/index.js";
 import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { readSessionRuntimeOwnershipAsync } from "../../agents/harness/session-runtime-ownership.js";
-import { resolvePublishedModelCatalogOwner } from "../../agents/prepared-model-catalog-owner.js";
+import {
+  publishedModelCatalogOwnerMatchesAgent,
+  resolvePublishedModelCatalogOwner,
+} from "../../agents/prepared-model-catalog-owner.js";
 import {
   getPublishedPreparedModelCatalogOwnerSnapshot,
   materializePreparedModelCatalogOwner,
@@ -10,6 +11,7 @@ import {
 import { getPreparedModelRuntimeAuthMaterializations } from "../../agents/prepared-model-runtime-auth.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.types.js";
+import { configSnapshotsMatch } from "../../config/runtime-config-snapshot-match.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginRequesterModelCatalog } from "../../plugins/model-catalog.types.js";
 import { prepareOperatorModelPolicyPresentation } from "../operator-model-presentation.js";
@@ -19,48 +21,15 @@ import type { ChatMetadataReadParams } from "./chat-metadata-contract.js";
 import { projectSessionModelCatalog } from "./chat-metadata-session-projection.js";
 import { prepareChatMetadataSessionRead } from "./chat-metadata-session-read.js";
 import { prepareModelsListResult } from "./models-list-result.js";
+import { projectRequesterModelCatalog } from "./requester-model-catalog-projection.js";
 import type { GatewayRequestContext } from "./types.js";
 
-/** Allowlist, not a spread: credential locators and future Gateway fields cannot leak. */
-export function projectRequesterModelCatalog(
-  result: ModelsListResult,
-  pending = false,
-): PluginRequesterModelCatalog {
-  const projection: Omit<PluginRequesterModelCatalog, "revision"> = {
-    state: pending || result.pendingProviders?.length ? "pending" : "prepared",
-    // Unknown/pending and explicitly non-selectable rows are never availability evidence.
-    models: result.models
-      .filter((model) => model.available === true && model.manualSelectionAllowed !== false)
-      .map((model) => {
-        const choice: PluginRequesterModelCatalog["models"][number] = {
-          id: model.id,
-          provider: model.provider,
-          name: model.name,
-        };
-        if (model.thinkingLevels) {
-          choice.thinkingLevels = model.thinkingLevels.map((level) => level.id);
-        }
-        if (model.supportsFastMode !== undefined) {
-          choice.fastModes = model.supportsFastMode ? [false, true, "auto"] : [false];
-        }
-        return choice;
-      }),
-    ...(result.modelSelectionPolicy
-      ? {
-          selectionPolicy: {
-            restricted: true,
-            defaultModel: result.modelSelectionPolicy.defaultModel,
-          },
-        }
-      : {}),
-  };
-  return {
-    revision: createHash("sha256").update(JSON.stringify(projection)).digest("hex"),
-    ...projection,
-  };
-}
-
-/** Same saved-session, prepared inventory and role projection as models.list; no Gateway client. */
+/**
+ * Read-only adapter over the models.list owners, without a Gateway client or refresh authority.
+ * Keep preparation here: models.list also supports draft/account selectors, discovery and refresh,
+ * whereas this capability may consume only published facts for its admitted saved session.
+ * Session auth projection and policy presentation remain shared with models.list.
+ */
 export async function readRequesterModelCatalog(params: {
   config: OpenClawConfig;
   agentId: string;
@@ -118,11 +87,11 @@ export async function readRequesterModelCatalog(params: {
       beforeRequest: assertSessionCurrent,
     };
     const snapshot =
-      params.preparedModelRuntime ??
-      getPublishedPreparedModelCatalogOwnerSnapshot({
-        config,
-        agentId: params.agentId,
-      });
+      getPublishedPreparedModelCatalogOwnerSnapshot({ config, agentId: params.agentId }) ??
+      (params.preparedModelRuntime?.isCurrent() &&
+      configSnapshotsMatch(params.preparedModelRuntime.config, config)
+        ? params.preparedModelRuntime
+        : undefined);
     if (!snapshot) {
       return await read.withCurrent(() => {
         assertSessionCurrent();
@@ -142,7 +111,7 @@ export async function readRequesterModelCatalog(params: {
     const owner = resolvePublishedModelCatalogOwner(prepared);
     const assertPreparedCurrent = () => {
       assertSessionCurrent();
-      if (!owner.isCurrent() || owner.agentId !== params.agentId) {
+      if (!owner.isCurrent() || !publishedModelCatalogOwnerMatchesAgent(owner, params.agentId)) {
         throw new PreparedModelRuntimePublicationSupersededError(
           "Requester catalog owner changed.",
         );
@@ -182,7 +151,13 @@ export async function readRequesterModelCatalog(params: {
         );
       }
       const result = catalog.read();
-      const models = projectSessionModelCatalog(scope, result.models, config, ownership);
+      const models = projectSessionModelCatalog(
+        scope,
+        result.models,
+        config,
+        ownership,
+        "admitted",
+      );
       const projected = { ...result, models };
       const presented =
         prepareOperatorModelPolicyPresentation({

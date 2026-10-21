@@ -89,13 +89,15 @@ export function preparePluginToolExecutionCapabilities(params: {
   const resultBudget = resolveToolResultBudget(params.modelContextWindowTokens);
   return (assertInvocationCurrent, pluginSignal) => ({
     runtimeContext: {
-      models: createPluginRequesterModels({
-        ...params,
-        assertCurrent: assertInvocationCurrent,
-        signal: AbortSignal.any(
-          [params.signal, pluginSignal].filter((value): value is AbortSignal => Boolean(value)),
-        ),
-      }),
+      models: authority
+        ? createPluginRequesterModels({
+            ...params,
+            assertCurrent: assertInvocationCurrent,
+            signal: AbortSignal.any(
+              [params.signal, pluginSignal].filter((value): value is AbortSignal => Boolean(value)),
+            ),
+          })
+        : undefined,
     },
     assertCompleteResult(text) {
       assertInvocationCurrent();

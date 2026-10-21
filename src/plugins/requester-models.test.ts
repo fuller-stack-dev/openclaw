@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import { preparePluginToolExecutionCapabilities } from "../agents/plugin-tool-execution.js";
+import * as catalogReader from "../gateway/server-methods/requester-model-catalog.js";
 import { registerPluginCommandInRegistry } from "./command-registration.js";
 import { createPluginRecord } from "./loader-records.js";
 import type { PluginRequesterModels } from "./model-catalog.types.js";
@@ -15,7 +16,10 @@ import { createPluginToolFactoryContext } from "./tool-factory-context.js";
 import type { OpenClawPluginToolContext } from "./tool-types.js";
 
 const result = { revision: "fixture-revision", state: "prepared" as const, models: [] };
-afterEach(() => resetPluginRuntimeStateForTest());
+afterEach(() => {
+  vi.restoreAllMocks();
+  resetPluginRuntimeStateForTest();
+});
 
 function registry() {
   const value = createEmptyPluginRegistry();
@@ -34,10 +38,8 @@ function registry() {
 
 it("advertises a version without removing the released string-list capability contract", () => {
   const runtime = createRuntimeBase();
-  expect(runtime.capabilities?.models).toBe(1);
+  expect(runtime.capabilities).toContain("requester-model-catalog-v1");
   expect(runtime.capabilities).toContain("sender-restricted-hidden-helpers-v1");
-  const older: Pick<typeof runtime, "capabilities"> = {};
-  expect(older.capabilities?.models).toBeUndefined();
 });
 
 it("omits model authority when requester or exact session authority is missing and rejects forged authority", () => {
@@ -144,7 +146,7 @@ it.each([
       config: {},
       agentId: "main",
       isAuthorizedSender: authorized,
-      runtimeContext: present ? { models: { list: async () => result } } : {},
+      runtimeContext: present ? { createModels: () => ({ list: async () => result }) } : {},
     });
     expect(invoked).toBe(true);
     expect(observed).toBeUndefined();
@@ -157,14 +159,17 @@ it("keeps command opt-in immutable and rejects reads after retirement or invocat
   const release = createDeferred();
   const requested: ("models" | "subagents")[] = ["models"];
   let retained: PluginRequesterModels | undefined;
-  const list = vi.fn(async () => {
-    if (list.mock.calls.length === 1) {
+  const list = vi
+    .spyOn(catalogReader, "readRequesterModelCatalog")
+    .mockImplementation(async (params) => {
+      if (list.mock.calls.length === 1) {
+        return result;
+      }
+      entered.resolve();
+      await release.promise;
+      params.assertCurrent();
       return result;
-    }
-    entered.resolve();
-    await release.promise;
-    return result;
-  });
+    });
   registerPluginCommandInRegistry(value, "catalog-test", {
     name: "catalog",
     description: "Catalog",
@@ -189,7 +194,22 @@ it("keeps command opt-in immutable and rejects reads after retirement or invocat
     config: {},
     agentId: "main",
     isAuthorizedSender: true,
-    runtimeContext: { models: { list } },
+    runtimeContext: {
+      createModels: ({ signal, assertCurrent }) =>
+        createPluginRequesterModels({
+          config: {},
+          agentId: "main",
+          sessionKey: "agent:main:one",
+          sessionId: "one",
+          authority: createAdmittedRunOperatorAuthority({
+            profileId: "person",
+            scopes: [],
+            assertCurrent() {},
+          }),
+          signal,
+          assertCurrent,
+        }),
+    },
   });
   await awaitGateBeforeSettlement(
     entered.promise,

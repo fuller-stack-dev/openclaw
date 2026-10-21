@@ -7,6 +7,7 @@ import { isRecord } from "../utils.js";
 import { normalizeAgentPromptSurfaceKind } from "./agent-prompt-surface-kind.js";
 import { getPluginCommandExecutionCount } from "./command-execution-lock.js";
 import { clearPluginCommands } from "./command-registry-state.js";
+import type { PluginCommandRuntimeCapability } from "./plugin-command.types.js";
 import { wrapCurrentPluginInstance } from "./plugin-instance-scope.js";
 import type { PluginRegistry } from "./registry-types.js";
 import { getPluginRegistrationContext, requireActivePluginRegistry } from "./runtime.js";
@@ -117,9 +118,13 @@ function validateCommandName(
 const commandCapabilityRules = {
   subagents: { requireAuth: true, manifestContract: true },
   models: { requireAuth: false, manifestContract: false },
-} satisfies Record<import("./plugin-command.types.js").PluginCommandRuntimeCapability, {
-  requireAuth: boolean; manifestContract: boolean;
-}>;
+} satisfies Record<
+  PluginCommandRuntimeCapability,
+  {
+    requireAuth: boolean;
+    manifestContract: boolean;
+  }
+>;
 
 function validatePluginCommandDefinition(
   command: OpenClawPluginCommandDefinition,
@@ -147,11 +152,20 @@ function validatePluginCommandDefinition(
   if (command.runtimeCapabilities !== undefined) {
     if (
       !Array.isArray(command.runtimeCapabilities) ||
-      command.runtimeCapabilities.some((capability: unknown) => typeof capability !== "string" || !Object.hasOwn(commandCapabilityRules, capability))
+      command.runtimeCapabilities.some(
+        (capability: unknown) =>
+          typeof capability !== "string" || !Object.hasOwn(commandCapabilityRules, capability),
+      )
     ) {
       return "Command runtimeCapabilities must contain supported capability names";
     }
-    if (command.runtimeCapabilities.some((capability) => commandCapabilityRules[capability].requireAuth) && command.requireAuth !== true) {
+    if (
+      command.runtimeCapabilities.some(
+        (capability: PluginCommandRuntimeCapability) =>
+          commandCapabilityRules[capability].requireAuth,
+      ) &&
+      command.requireAuth !== true
+    ) {
       return "Command runtime capabilities require requireAuth: true";
     }
   }
@@ -345,7 +359,9 @@ export function registerPluginCommandInRegistry(
   const declaredCapabilities = commandRuntimeCapabilities ?? [];
   const undeclared =
     command.runtimeCapabilities?.filter(
-      (capability) => commandCapabilityRules[capability].manifestContract && !declaredCapabilities.includes(capability),
+      (capability) =>
+        commandCapabilityRules[capability].manifestContract &&
+        !declaredCapabilities.some((declared) => declared === capability),
     ) ?? [];
   if (undeclared.length > 0) {
     return {

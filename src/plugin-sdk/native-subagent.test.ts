@@ -45,6 +45,6 @@ it("exports the optional native contract through the public plugin API", () => {
     Native | undefined
   >();
   expectTypeOf<Command["runtimeCapabilities"]>().toEqualTypeOf<
-    readonly "subagents"[] | undefined
+    readonly ("subagents" | "models")[] | undefined
   >();
 });

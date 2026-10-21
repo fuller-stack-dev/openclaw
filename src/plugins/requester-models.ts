@@ -2,7 +2,9 @@ import {
   assertAdmittedRunOperatorAuthority,
   type AdmittedRunOperatorAuthority,
 } from "../agents/admitted-run-context.js";
+import { PreparedModelRuntimePublicationSupersededError } from "../agents/prepared-model-runtime.errors.js";
 import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.types.js";
+import { createRuntimeConfigReader } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginRequesterModels } from "./model-catalog.types.js";
 import { getInProcessGatewayRequestContext } from "./runtime/gateway-request-scope.js";
@@ -25,9 +27,9 @@ export function createPluginRequesterModels(params: {
   assertAdmittedRunOperatorAuthority(authority);
   // Capture this owner now, never borrow a later request's client or Gateway context.
   const context = getInProcessGatewayRequestContext();
+  const readConfig = context?.getRuntimeConfig ?? createRuntimeConfigReader(config);
   const assertCurrent = () => {
     params.signal?.throwIfAborted();
-    authority.signal?.throwIfAborted();
     params.assertCurrent();
     authority.assertCurrent();
   };
@@ -37,17 +39,26 @@ export function createPluginRequesterModels(params: {
       const { readRequesterModelCatalog } =
         await import("../gateway/server-methods/requester-model-catalog.js");
       assertCurrent();
+      const currentConfig = readConfig();
+      const assertReadCurrent = () => {
+        assertCurrent();
+        if (readConfig() !== currentConfig) {
+          throw new PreparedModelRuntimePublicationSupersededError(
+            "Requester config changed. Retry the request.",
+          );
+        }
+      };
       const result = await readRequesterModelCatalog({
-        config,
+        config: currentConfig,
         agentId,
         sessionKey,
         sessionId,
         authority,
         preparedModelRuntime: params.preparedModelRuntime,
         context,
-        assertCurrent,
+        assertCurrent: assertReadCurrent,
       });
-      assertCurrent();
+      assertReadCurrent();
       return result;
     },
   });

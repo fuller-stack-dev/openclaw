@@ -34,10 +34,11 @@ enabling behavior that depends on it; equal product versions and tool names do
 not establish support. These process-stable facts do not grant caller authority,
 and they remain unavailable during metadata-only registration.
 
-The released string-list contract remains available. Additive versioned APIs also
-use optional properties on that list: `api.runtime.capabilities?.models === 1`
-advertises the [requester-admitted model catalog](/plugins/sdk-runtime/models#requester-admitted-model-catalog).
-An absent version is unsupported; do not substitute a product-version check.
+Versioned APIs use string tokens in that list. For example,
+`api.runtime.capabilities?.includes("requester-model-catalog-v1")` advertises the
+[requester-admitted model catalog](/plugins/sdk-runtime/models#requester-admitted-model-catalog).
+An absent token is unsupported; do not substitute a product-version check or
+attach capability properties to the array.
 
 `sender-restricted-hidden-helpers-v1` guarantees that sender-restricted requesters
 can start only hidden helpers of the same agent, retaining their restricted tool

@@ -80,12 +80,18 @@ export const handlePluginCommand: CommandHandler = async (params, allowTextComma
         ? {
             runtimeContext: {
               createSubagents,
-              createModels: ({ signal, assertCurrent }) => createPluginRequesterModels({
-                config: cfg, agentId: targetAgentId, sessionKey: params.sessionKey,
-                sessionId: targetSessionEntry.sessionId, authority: params.opts?.operatorAuthority,
-                signal: params.opts?.abortSignal ? AbortSignal.any([signal, params.opts.abortSignal]) : signal,
-                assertCurrent,
-              }),
+              createModels: ({ signal, assertCurrent }) =>
+                createPluginRequesterModels({
+                  config: cfg,
+                  agentId: targetAgentId,
+                  sessionKey: params.sessionKey,
+                  sessionId: targetSessionEntry?.sessionId,
+                  authority: params.opts?.operatorAuthority,
+                  signal: params.opts?.abortSignal
+                    ? AbortSignal.any([signal, params.opts.abortSignal])
+                    : signal,
+                  assertCurrent,
+                }),
               compactCurrent: async (invocationSignal, assertOwnerCurrent) => {
                 if (!params.command.isAuthorizedSender) {
                   return { compacted: false, reason: "compaction requires authorization" };

@@ -12,7 +12,7 @@ Call a model, resolve model-selection policy, and resolve provider auth without 
 
 ## Requester-admitted model catalog
 
-Feature-detect `api.runtime.capabilities?.models === 1` before using the
+Feature-detect `api.runtime.capabilities?.includes("requester-model-catalog-v1")` before using the
 requester-bound `runtimeContext.models?.list()` reader. Command registrations
 opt in with `runtimeCapabilities: ["models"]`; tool factories receive the reader
 in their version-2 context. Older hosts, unauthorized commands, and invocations
@@ -22,7 +22,9 @@ without an exact admitted requester/session leave it `undefined`.
 api.registerCommand({
   name: "model-catalog",
   description: "Show models admitted for this requester",
-  runtimeCapabilities: ["models"],
+  ...(api.runtime.capabilities?.includes("requester-model-catalog-v1")
+    ? { runtimeCapabilities: ["models"] as const }
+    : {}),
   async handler(ctx) {
     const catalog = await ctx.runtimeContext?.models?.list();
     if (!catalog || catalog.state === "pending") {
@@ -37,20 +39,36 @@ The result contains an opaque `revision`, `state: "prepared" | "pending"`, and
 `models` with `id`, `provider`, `name`, optional `thinkingLevels` (level IDs), and
 optional `fastModes` (`false`, `true`, or `"auto"`). Restricted requesters also
 receive `selectionPolicy: { restricted: true, defaultModel: string | null }`.
-A null default means there is no currently admitted default. No canonical model
-family metadata is currently exposed; do not infer families from model names.
+For a prepared result, a null default means there is no currently admitted
+default. While pending, it may also mean the default is not known yet.
+`fastModes` covers the boolean/`"auto"` fast toggle, not service tiers or
+`"ultrafast"`; absence means the prepared catalog makes no fast-toggle claim.
+No canonical model family metadata is currently exposed; do not infer families
+from model names.
 
 This is the safe projection of the same saved-session, prepared inventory and
 role policy used by session-scoped `models.list`, without needing a Gateway
-client. Only prepared, available and manually selectable rows are included.
-Pending inventory is never proof of availability. The reader does not trigger
+client. Only prepared, available and manually selectable rows are included, including
+the current model when its native harness or inference worker owns authentication.
+Active-placement facts are read only from the invocation's bound Gateway context.
+A headless invocation without that context uses prepared host authentication and
+configured worker requirements only; it cannot infer an active worker placement
+or borrow another Gateway's authentication facts. This is admission metadata,
+not an inference health check. Pending inventory is
+never proof of availability. The reader does not trigger
 discovery or auth refresh, accept model/session/agent selectors, return auth
 profiles or credentials, or expose `apiKeySupported`. It cannot change a model
 or grant permission for a later inference request.
 
-Keep the reader within its command or tool invocation. Session reset, requester
-revocation, plugin retirement and owner replacement invalidate retained reads,
-including results still awaiting publication. Treat revisions as equality tokens
+Keep the reader within its command or tool invocation. `list()` can reject when
+config, auth/catalog publication, or the saved session changes during the read.
+Discard that result and retry once in the same still-admitted invocation; the
+next call selects the current config and published catalog instead of remaining
+pinned to a retired auth owner. If no current catalog is published yet it returns
+`pending`. A second rejection should be shown as temporarily unavailable, not
+retried in a loop. Session reset, requester revocation, plugin retirement, and
+invocation completion can permanently invalidate that reader; obtain a new
+admitted invocation rather than retaining it. Treat revisions as equality tokens
 for the public projection, not durable authorization or global catalog identity.
 
 ## Protected model egress for standalone commands

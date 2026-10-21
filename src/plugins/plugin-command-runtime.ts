@@ -54,7 +54,10 @@ export type PluginCommandDispatchContext = Readonly<{
   diagnosticsPrivateRouted?: PluginCommandContext["diagnosticsPrivateRouted"];
   runtimeContext?: {
     /** Host-only factory, bound to the command invocation before the reader is exposed. */
-    createModels?: (params: { signal: AbortSignal; assertCurrent: () => void }) => NonNullable<PluginCommandContext["runtimeContext"]>["models"];
+    createModels?: (params: {
+      signal: AbortSignal;
+      assertCurrent: () => void;
+    }) => NonNullable<PluginCommandContext["runtimeContext"]>["models"];
     /** Core-only factory; requester authority is captured by the dispatch owner. */
     createSubagents?: import("./runtime/native-subagent-context.js").NativeSubagentCommandFactory;
     compactCurrent?: (
