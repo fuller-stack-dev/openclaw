@@ -11,6 +11,7 @@ import {
   inspectGeminiToolSchemas,
   normalizeDeepSeekToolSchemas,
 } from "./provider-tools.js";
+import { openRecord } from "./tool-plugin.js";
 
 it("preserves truncation when a provider rewrites a sibling union", () => {
   const definitions: Record<string, unknown> = { leaf: { type: "string" } };
@@ -504,4 +505,73 @@ it("skips openai strict-tool normalization on non-native routes", () => {
 
   expect(normalizeOpenAITools(tools, route)).toBe(tools);
   expect(inspectOpenAITools(tools, route)).toStrictEqual([]);
+});
+
+it("reports one diagnostic before native OpenAI closes a bare nested object", () => {
+  const parameters = objectSchema({ payload: { type: "object" } });
+  const tools = [tool(parameters)];
+  expect(inspectOpenAITools(tools)).toEqual([
+    {
+      toolName: "demo",
+      toolIndex: 0,
+      violations: ["demo.parameters.properties.payload"],
+    },
+  ]);
+  const normalized = normalizeOpenAITools(tools)[0]!;
+  expect(normalized.parameters).toMatchObject({
+    properties: { payload: { type: "object", properties: {}, additionalProperties: false } },
+  });
+  expect(() =>
+    validateToolArguments(normalized, {
+      type: "toolCall",
+      id: "call",
+      name: "demo",
+      arguments: { payload: { preserved: true } },
+    }),
+  ).toThrow();
+  expect(inspectOpenAITools(tools, { baseUrl: "https://proxy.example/v1" })).toEqual([]);
+});
+
+it("preserves explicitly open dictionary keys through native OpenAI normalization and validation", () => {
+  const parameters = objectSchema({ payload: openRecord("Arbitrary metadata") });
+  const tools = [tool(parameters)];
+  expect(inspectOpenAITools(tools)).toEqual([]);
+  const normalized = normalizeOpenAITools(tools)[0]!;
+  const args = { payload: { label: "kept", count: 2, nested: { enabled: true } } };
+  expect(normalized.parameters).toMatchObject({
+    properties: { payload: { description: "Arbitrary metadata", additionalProperties: true } },
+  });
+  expect(
+    validateToolArguments(normalized, {
+      type: "toolCall",
+      id: "call",
+      name: "demo",
+      arguments: args,
+    }),
+  ).toEqual(args);
+});
+
+it("combines schema paths into one diagnostic without inspecting literal data", () => {
+  const tools = [
+    tool(
+      objectSchema({
+        values: { type: "array", items: { anyOf: [{ type: "object" }, { type: "string" }] } },
+        table: { type: "object", additionalProperties: { type: "object" } },
+        closed: { type: "object", additionalProperties: false },
+        empty: { type: "object", properties: {} },
+        literal: { type: "string", default: { type: "object" }, examples: [{ type: "object" }] },
+      }),
+    ),
+  ];
+  expect(inspectOpenAITools(tools)).toEqual([
+    {
+      toolName: "demo",
+      toolIndex: 0,
+      violations: [
+        "demo.parameters.properties.values.items.anyOf[0]",
+        "demo.parameters.properties.table.additionalProperties",
+      ],
+    },
+  ]);
+  expect(inspectOpenAITools([tool({ type: "object" })])).toEqual([]);
 });

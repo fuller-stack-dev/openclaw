@@ -131,6 +131,49 @@ so the tool remains callable. A one-time warning names the affected tool;
 validation beyond the cutoff is unavailable. Keep schemas shallow enough to
 describe useful arguments to the model. This applies to MCP tools too.
 
+## Provider-portable dictionaries and validation
+
+Declare dictionaries explicitly. On native OpenAI Responses routes, compatibility
+normalization turns a nested bare `{ type: "object" }` into a closed empty
+object, rejecting every key. Use `additionalProperties: true`, or the SDK helper:
+
+```typescript
+import { openRecord } from "openclaw/plugin-sdk/tool-plugin";
+import { Type } from "typebox";
+
+const parameters = Type.Object({
+  metadata: openRecord("Arbitrary JSON metadata keyed by name."),
+});
+```
+
+Registration emits one warning per affected tool, listing the nested schema paths.
+Static tool warnings appear in `openclaw plugins inspect <id> --runtime` and doctor plugin
+diagnostics. Factory schemas are checked when the factory produces a tool, not by
+invoking factories during metadata-only inspection. These warnings do not reject
+registration or change normalization. For fixed records, declare `properties`
+and an explicit `additionalProperties` policy instead.
+
+Provider schema support differs: Gemini cleanup removes `additionalProperties`
+and flattens mixed unions. An explicitly open dictionary preserves keys through
+OpenAI compatibility normalization, but it does not promise strict-mode support
+on every provider. Validate application-specific constraints in the concrete
+tool's `prepareArguments(args)`, before execution:
+
+```typescript
+import { ToolArgumentValidationError } from "openclaw/plugin-sdk/tool-plugin";
+
+function prepareArguments(args: unknown) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    throw new ToolArgumentValidationError("Expected an object of tool arguments.");
+  }
+  return args;
+}
+```
+
+Only this typed error thrown by `prepareArguments(args)` is classified as
+`errorKind: "argument-validation"`. Generic preparation failures and errors thrown by
+`execute` keep their existing error classification.
+
 ## Optional and factory tools
 
 Set `optional: true` when users should explicitly allowlist the tool before it
