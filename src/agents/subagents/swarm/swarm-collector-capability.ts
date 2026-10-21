@@ -4,6 +4,7 @@ import { composeSessionSourceAssertion } from "../../../config/sessions/session-
 import {
   bindAgentToolAvailability,
   getAgentToolAvailabilityBinding,
+  isAgentToolExecutionAvailable,
   type AgentToolAvailabilityBinding,
 } from "../../agent-tool-availability.js";
 import { SESSIONS_SPAWN_COLLECTOR_GUIDANCE } from "../../tool-description-presets.js";
@@ -18,7 +19,7 @@ const WAIT_GUIDANCE = SESSIONS_SPAWN_COLLECTOR_GUIDANCE.replace(
 );
 const readerBinding: AgentToolAvailabilityBinding = { prepare() {} };
 type SpawnCapability = {
-  nativeReader: object | undefined;
+  nativeReader: Pick<AnyAgentTool, "name" | "parameters"> | undefined;
   signal?: AbortSignal;
 };
 const spawnCapabilities = new WeakMap<AgentToolAvailabilityBinding, SpawnCapability>();
@@ -39,6 +40,23 @@ const joinedSpawns = new AsyncLocalStorage<JoinedSpawn>();
 
 export function markCollectorReaderTool<T extends AnyAgentTool>(tool: T): T {
   return bindAgentToolAvailability(tool, readerBinding);
+}
+
+function isNativeCollectorReader(
+  tool: Pick<AnyAgentTool, "name" | "parameters"> | undefined,
+): boolean {
+  return (
+    tool !== undefined &&
+    getAgentToolAvailabilityBinding(tool) === readerBinding &&
+    filterRuntimeCompatibleTools([tool]).tools.length === 1
+  );
+}
+
+/** A schema-only, gated or shadowed agents_wait cannot authorize native collector work. */
+export function isCallableCollectorReader(
+  tool: Pick<AnyAgentTool, "name" | "parameters"> | undefined,
+): boolean {
+  return tool !== undefined && isAgentToolExecutionAvailable(tool) && isNativeCollectorReader(tool);
 }
 
 function collectorSchema(
@@ -100,15 +118,14 @@ export function bindCollectorSpawnTool<T extends AnyAgentTool>(
       const retainedFields = collectorFieldsBySchema.get(schema);
       const currentFields = retainedFields ?? collectorFieldsFromSchema(schema) ?? fields;
       const nativeReader = (reader: ReturnType<typeof callableTools.get>) =>
-        reader &&
-        getAgentToolAvailabilityBinding(reader) === readerBinding &&
-        filterRuntimeCompatibleTools([reader]).tools.length === 1
-          ? reader
-          : undefined;
+        reader && isNativeCollectorReader(reader) ? reader : undefined;
       // An offered reader keeps the collector definition stable across turns; only a
       // callable reader lets this turn start a collector (see the spawn guard).
       const offeredReader = nativeReader(offeredTools.get("agents_wait"));
-      capability.nativeReader = nativeReader(callableTools.get("agents_wait"));
+      const callableReader = callableTools.get("agents_wait");
+      capability.nativeReader = isCallableCollectorReader(callableReader)
+        ? callableReader
+        : undefined;
       const preparedSchema = collectorSchema(schema, offeredReader ? currentFields : {});
       // Hook wrappers share schemas, not tool objects, while collector fields are hidden.
       if (preparedSchema !== schema || !retainedFields) {
@@ -229,7 +246,11 @@ export function captureCollectorSpawnGuard(
     capability?.signal?.throwIfAborted();
     if (joined) {
       assertJoinedSpawn(joined);
-    } else if (!capability?.nativeReader) {
+    }
+    if (
+      (!joined || joined.nativePluginOwner) &&
+      !isCallableCollectorReader(capability?.nativeReader)
+    ) {
       throw new ToolInputError(
         "Collector results are unavailable in this tool surface. Omit collect, outputSchema, and groupId to start an ordinary announcing child.",
       );

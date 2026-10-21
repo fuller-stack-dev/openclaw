@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { stableStringify } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { getRuntimeConfig } from "../config/io.runtime.js";
+import type { OpenClawConfig } from "../config/types.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import type {
   NativeSubagentAccepted,
@@ -29,6 +30,7 @@ import {
 import {
   runWithJoinedCollectorSpawn,
   bindJoinedCollectorInvocation,
+  isCallableCollectorReader,
 } from "./subagents/swarm/swarm-collector-capability.js";
 import {
   readNativeSubagentCollection,
@@ -46,6 +48,10 @@ export type NativeSubagentRequestSource = {
     sessionId: string;
     runId: string;
   };
+  /** Required to refresh a supplied owner-prepared capability profile without dropping inputs. */
+  prepareCurrentCapabilityProfile?: (
+    config: OpenClawConfig,
+  ) => Promise<NonNullable<InternalCodingToolsOptions["conversationCapabilityProfile"]>>;
   lifecycleRevision?: string;
   operatorAuthority: AdmittedRunOperatorAuthority;
   assertCurrent: () => void;
@@ -166,17 +172,29 @@ export function createRequestNativeSubagentRuntime(
     return withGatewayToolCallerIdentity(identity, run);
   };
   let preparedTools: Promise<AnyAgentTool[]> | undefined;
-  const tools = async (fresh = false) => {
+  const tools = async (currentConfig?: OpenClawConfig) => {
     assertCurrent();
     const prepare = () =>
       withCaller(async () => {
         const { createOpenClawCodingToolsInternalAsync } = await import("./agent-tools.js");
         assertCurrent();
+        if (
+          currentConfig &&
+          source.options.conversationCapabilityProfile &&
+          !source.prepareCurrentCapabilityProfile
+        ) {
+          throw new Error("Current native subagent policy preparation is unavailable.");
+        }
+        const currentProfile =
+          currentConfig && source.prepareCurrentCapabilityProfile
+            ? await source.prepareCurrentCapabilityProfile(currentConfig)
+            : undefined;
+        assertCurrent();
         return createOpenClawCodingToolsInternalAsync(
           {
             ...source.options,
-            ...(fresh
-              ? { config: getRuntimeConfig(), conversationCapabilityProfile: undefined }
+            ...(currentConfig
+              ? { config: currentConfig, conversationCapabilityProfile: currentProfile }
               : {}),
             pluginExecutionAuthority: source.operatorAuthority,
             assertInvocationCurrent: assertCurrent,
@@ -187,7 +205,7 @@ export function createRequestNativeSubagentRuntime(
           { assertCurrent },
         );
       });
-    const result = await (fresh ? prepare() : (preparedTools ??= prepare()));
+    const result = await (currentConfig ? prepare() : (preparedTools ??= prepare()));
     assertCurrent();
     return result;
   };
@@ -196,7 +214,7 @@ export function createRequestNativeSubagentRuntime(
       const surface = await tools();
       if (
         !surface.some((tool) => tool.name === "sessions_spawn") ||
-        !surface.some((tool) => tool.name === "agents_wait")
+        !isCallableCollectorReader(surface.find((tool) => tool.name === "agents_wait"))
       ) {
         return false;
       }
@@ -215,7 +233,7 @@ export function createRequestNativeSubagentRuntime(
         throw new Error("sessions_spawn is not available to the current requester.");
       }
       // The provenance join must not grant collector access absent from the native surface.
-      if (!surface.some((tool) => tool.name === "agents_wait")) {
+      if (!isCallableCollectorReader(surface.find((tool) => tool.name === "agents_wait"))) {
         throw new Error("agents_wait is not available to the current requester.");
       }
       admitted = await (preparedAdmission ??= source.prepareSpawn(assertCurrent));
@@ -373,6 +391,22 @@ export function createRequestNativeSubagentRuntime(
     async list(params) {
       // Listing does not execute agents_wait, so prepare the current native policy
       // rather than trusting the invocation's cached tool surface.
+      assertCurrent();
+      if (
+        params?.status !== undefined &&
+        ![
+          "queued",
+          "running",
+          "interrupted",
+          "terminal",
+          "done",
+          "failed",
+          "killed",
+          "timeout",
+        ].includes(params.status)
+      ) {
+        throw new Error("Unknown native subagent status.");
+      }
       const config = getRuntimeConfig();
       const assertPolicyCurrent = () => {
         assertCurrent();
@@ -380,9 +414,9 @@ export function createRequestNativeSubagentRuntime(
           throw new Error("Native subagent tool policy changed; retry the listing.");
         }
       };
-      const surface = await tools(true);
+      const surface = await tools(config);
       assertPolicyCurrent();
-      if (!surface.some((tool) => tool.name === "agents_wait")) {
+      if (!isCallableCollectorReader(surface.find((tool) => tool.name === "agents_wait"))) {
         throw new Error("agents_wait is not available to the current requester.");
       }
       const records = await listSubagentRunsForRequester({
@@ -393,7 +427,11 @@ export function createRequestNativeSubagentRuntime(
       });
       assertPolicyCurrent();
       return records
-        .toSorted((a, b) => b.createdAt - a.createdAt || a.runId.localeCompare(b.runId))
+        .toSorted((a, b) => {
+          const aId = a.swarmRunId ?? a.runId;
+          const bId = b.swarmRunId ?? b.runId;
+          return b.createdAt - a.createdAt || (aId < bId ? -1 : aId > bId ? 1 : 0);
+        })
         .flatMap((entry) => {
           const owner = entry.nativePluginOwner;
           if (
@@ -422,7 +460,7 @@ export function createRequestNativeSubagentRuntime(
     async collect(params) {
       const surface = await tools();
       const wait = surface.find((tool) => tool.name === "agents_wait");
-      if (!wait) {
+      if (!wait || !isCallableCollectorReader(wait)) {
         throw new Error("agents_wait is not available to the current requester.");
       }
       const toolCallId = randomUUID();

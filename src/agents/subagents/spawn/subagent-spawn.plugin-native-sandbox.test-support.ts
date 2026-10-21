@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { runWithReplyNativeSubagents } from "../../../auto-reply/reply/dispatch-native-subagent.js";
 import { buildTestCtx } from "../../../auto-reply/reply/test-ctx.js";
+import { setRuntimeConfigSnapshot } from "../../../config/config.js";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
@@ -23,13 +24,16 @@ import {
 
 export function registerNativePluginSandboxCases(options: NativePluginSpawnTestOptions) {
   it.each([
-    { tool: "sessions_spawn", required: false },
-    { tool: "agents_wait", required: false },
-    { tool: "sessions_spawn", required: true },
-    { tool: "agents_wait", required: true },
+    { tool: "sessions_spawn", required: false, defaultAllowlist: false },
+    { tool: "agents_wait", required: false, defaultAllowlist: false },
+    { tool: "sessions_spawn", required: true, defaultAllowlist: false },
+    { tool: "agents_wait", required: true, defaultAllowlist: false },
+    { tool: "list", required: false, defaultAllowlist: false },
+    { tool: "list", required: false, defaultAllowlist: true },
+    { tool: "list", required: true, defaultAllowlist: false },
   ] as const)(
-    "reply native facade enforces sandbox policy for $tool before effects (required=$required)",
-    async ({ tool, required }) => {
+    "reply native facade enforces sandbox policy for $tool before effects (required=$required, default=$defaultAllowlist)",
+    async ({ tool, required, defaultAllowlist }) => {
       const source = createSpawnOperatorSource();
       const bound = await options.createBoundParent(
         source.authority,
@@ -168,6 +172,9 @@ export function registerNativePluginSandboxCases(options: NativePluginSpawnTestO
             acceptedIds.push(child.runId);
             return child;
           }
+          if (tool === "list") {
+            return expectDefined(nativeSubagentRuntime.list, "native list")();
+          }
           return nativeSubagentRuntime.collect({
             ids: [expectDefined(childRunId, "completed child")],
             timeoutSeconds: 0,
@@ -186,8 +193,15 @@ export function registerNativePluginSandboxCases(options: NativePluginSpawnTestO
         for (const scenario of scenarios) {
           bound.cfg.agents!.defaults!.sandbox = { mode: scenario.mode };
           bound.cfg.tools!.sandbox = {
-            tools: { allow: ["sessions_spawn", "agents_wait"], deny: scenario.deny ? [tool] : [] },
+            tools: {
+              allow: ["sessions_spawn", "agents_wait"],
+              deny: scenario.deny ? [tool === "list" ? "agents_wait" : tool] : [],
+            },
           };
+          if (defaultAllowlist && scenario.mode === "all" && scenario.deny) {
+            delete bound.cfg.tools!.sandbox;
+          }
+          setRuntimeConfigSnapshot({ ...bound.cfg });
           const before = {
             ids: [...subagentRuns.keys()],
             transcript: await transcript(),
@@ -197,11 +211,21 @@ export function registerNativePluginSandboxCases(options: NativePluginSpawnTestO
           await inReply(async () => {
             const requestId = [scenario.mode, scenario.deny].join("-");
             if (scenario.blocked) {
-              await expect(invoke(requestId)).rejects.toThrow(tool + " is not available");
+              await expect(invoke(requestId)).rejects.toThrow(
+                (tool === "list" ? "agents_wait" : tool) + " is not available",
+              );
             } else {
               const result = await invoke(requestId);
               if (tool === "sessions_spawn") {
                 expect(result).toMatchObject({ completionMode: "collect" });
+              } else if (tool === "list") {
+                expect(result).toEqual([
+                  expect.objectContaining({
+                    runId: childRunId,
+                    requestId: "initial",
+                    status: "done",
+                  }),
+                ]);
               } else {
                 expect(result).toMatchObject({
                   completed: [

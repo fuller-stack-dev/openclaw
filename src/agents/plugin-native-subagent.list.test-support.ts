@@ -152,6 +152,8 @@ export function registerNativePluginListCases() {
           record("done-" + i, { createdAt: 1_000 + i }),
         );
         rows.push(
+          record("internal-z", { createdAt: 2_000, swarmRunId: "A" }),
+          record("internal-a", { createdAt: 2_000, swarmRunId: "z" }),
           record("pending", {
             createdAt: 1,
             execution: { status: "queued" },
@@ -160,10 +162,14 @@ export function registerNativePluginListCases() {
           record("terminal-only", { createdAt: 2, collectorCompletion: undefined }),
         );
         saveSubagentRegistryToSqlite(new Map(rows.map((row) => [row.runId, row])));
+        await expect(list({ status: "Done" as "done" })).rejects.toThrow(
+          "Unknown native subagent status",
+        );
         const window = await list();
         expect(window).toHaveLength(200);
-        expect(window[0]?.runId).toBe("done-204");
-        expect(window.at(-1)?.runId).toBe("done-5");
+        expect(window.slice(0, 2).map((row) => row.runId)).toEqual(["A", "z"]);
+        expect(window[2]?.runId).toBe("done-204");
+        expect(window.at(-1)?.runId).toBe("done-7");
         expect(await list({ status: "queued" })).toEqual([
           {
             runId: "pending",

@@ -2,6 +2,10 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it, vi } from "vitest";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { resolveAgentWorkspaceDir } from "../../agent-scope.js";
+import {
+  gateAgentToolExecution,
+  finalizeAgentToolAvailability,
+} from "../../agent-tool-availability.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import {
   createSpawnOperatorSource,
@@ -17,16 +21,40 @@ export function registerNativePluginPolicyCases(options: NativePluginSpawnTestOp
     runEmbeddedAgent,
   } = options;
   it.each([
-    { allowlist: ["read"], unavailable: "sessions_spawn" },
-    { allowlist: ["sessions_spawn"], unavailable: "agents_wait" },
+    { allowlist: ["read"], unavailable: "sessions_spawn", reader: "absent" },
+    { allowlist: ["sessions_spawn"], unavailable: "agents_wait", reader: "absent" },
+    { allowlist: ["sessions_spawn", "agents_wait"], unavailable: "agents_wait", reader: "gated" },
+    {
+      allowlist: ["sessions_spawn", "agents_wait"],
+      unavailable: "agents_wait",
+      reader: "shadowed",
+    },
   ])(
-    "native plugin facade refuses a denied $unavailable before preparing or creating a child",
-    async ({ allowlist, unavailable }) => {
+    "native plugin facade refuses a denied $unavailable ($reader reader) before preparing or creating a child",
+    async ({ allowlist, unavailable, reader }) => {
       const source = createSpawnOperatorSource();
       const bound = await createBoundParent(source.authority);
       const { parentSessionKey, parentRunId } = bound;
       const { context, runtime } = await createBoundGateway(bound);
       const failures: unknown[] = [];
+      const agentTools = await import("../../agent-tools.js");
+      const original = agentTools.createOpenClawCodingToolsInternalAsync;
+      const preparation =
+        reader === "absent"
+          ? undefined
+          : vi
+              .spyOn(agentTools, "createOpenClawCodingToolsInternalAsync")
+              .mockImplementation(async (...args) => {
+                const surface = await original(...args);
+                const index = surface.findIndex((tool) => tool.name === "agents_wait");
+                const wait = expectDefined(surface[index], "native agents_wait");
+                // A same-named definition without the native reader binding shadows it.
+                const replacement =
+                  reader === "gated"
+                    ? gateAgentToolExecution(wait, "denied requester")
+                    : Object.assign({}, wait);
+                return finalizeAgentToolAvailability(surface.with(index, replacement));
+              });
       try {
         await withPluginRuntimeGatewayRequestScope(
           { context, isWebchatConnect: () => false },
@@ -70,6 +98,8 @@ export function registerNativePluginPolicyCases(options: NativePluginSpawnTestOp
       } catch (error) {
         failures.push(error);
       } finally {
+        preparation?.mockRestore();
+        source.closeRequest();
         failures.push(...(await closeBoundGateway(bound, runtime)));
         throwBoundFailures(failures);
       }

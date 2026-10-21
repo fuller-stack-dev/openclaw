@@ -267,6 +267,7 @@ export function createSubagentRegistryPublicApi(config: {
           runIds: [...snapshot.values()]
             .filter(
               (entry) =>
+                entry.collect === true &&
                 entry.requesterSessionKey === params.sessionKey &&
                 latest.getLatestSubagentRun(entry.childSessionKey, entry.childAgentId) === entry,
             )
