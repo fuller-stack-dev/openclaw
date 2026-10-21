@@ -2,6 +2,7 @@ import { normalizeToolParameterSchema } from "@openclaw/ai/internal/tool-schema"
 import { validateToolArguments } from "@openclaw/llm-core/validation";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { Type } from "typebox";
 import { expect, it } from "vitest";
 import { findSourceImportBackedges } from "../../test/helpers/source-import-closure.js";
 import {
@@ -507,6 +508,45 @@ it("skips openai strict-tool normalization on non-native routes", () => {
   expect(inspectOpenAITools(tools, route)).toStrictEqual([]);
 });
 
+it.each([
+  ["bare", { type: "object" }, true],
+  ["Type.Object({})", Type.Object({}), true],
+  ["empty patterns", { type: "object", patternProperties: {} }, true],
+  ["Type.Record", Type.Record(Type.String(), Type.String()), false],
+  [
+    "record with empty properties",
+    { type: "object", properties: {}, patternProperties: { "^.*$": { type: "string" } } },
+    false,
+  ],
+  ["fixed properties", Type.Object({ k: Type.String() }), false],
+  ["explicitly open", { type: "object", additionalProperties: true }, false],
+  ["explicitly closed", { type: "object", additionalProperties: false }, false],
+  ["typed additional keys", { type: "object", additionalProperties: { type: "string" } }, false],
+  ["nullable", { type: ["object", "null"] }, false],
+] as const)(
+  "flags %s exactly when keys stop validating after normalization",
+  (_label, payload, losesKeys) => {
+    const original = tool(objectSchema({ payload }));
+    const normalized = normalizeOpenAITools([original])[0]!;
+    const acceptsKeys = (candidate: typeof normalized) => {
+      try {
+        validateToolArguments(candidate, {
+          type: "toolCall",
+          id: "keys",
+          name: "demo",
+          arguments: { payload: { k: "v" } },
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const stoppedValidating = acceptsKeys(original) && !acceptsKeys(normalized);
+    expect(stoppedValidating).toBe(losesKeys);
+    expect(inspectOpenAITools([original]).length > 0).toBe(stoppedValidating);
+  },
+);
+
 it("reports one diagnostic before native OpenAI closes a bare nested object", () => {
   const parameters = objectSchema({ payload: { type: "object" } });
   const tools = [tool(parameters)];
@@ -551,6 +591,39 @@ it("preserves explicitly open dictionary keys through native OpenAI normalizatio
   ).toEqual(args);
 });
 
+it.each([false, true])(
+  "reuses schema-identity scans (open dictionary: %s) without caching tool names or indices",
+  (open) => {
+    let reads = 0;
+    const payload = {
+      get type() {
+        reads++;
+        return "object";
+      },
+      ...(open ? { additionalProperties: true } : {}),
+    };
+    const parameters = objectSchema({ payload });
+    const tools = [tool(parameters, "first")];
+    inspectOpenAITools(tools);
+    const afterFirstScan = reads;
+    expect(afterFirstScan).toBeGreaterThan(0);
+    expect(
+      inspectOpenAITools([tool(Type.Object({}), "clean"), tool(parameters, "second")]),
+    ).toEqual(
+      open
+        ? []
+        : [
+            {
+              toolName: "second",
+              toolIndex: 1,
+              violations: ["second.parameters.properties.payload"],
+            },
+          ],
+    );
+    expect(reads).toBe(afterFirstScan);
+  },
+);
+
 it("combines schema paths into one diagnostic without inspecting literal data", () => {
   const tools = [
     tool(
@@ -570,6 +643,7 @@ it("combines schema paths into one diagnostic without inspecting literal data", 
       violations: [
         "demo.parameters.properties.values.items.anyOf[0]",
         "demo.parameters.properties.table.additionalProperties",
+        "demo.parameters.properties.empty",
       ],
     },
   ]);

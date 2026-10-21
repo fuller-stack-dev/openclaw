@@ -1,6 +1,7 @@
 // Tool schema runtime tests cover provider plugin schema normalization and
 // compact diagnostics for invalid provider-facing tool schemas.
-import { describe, expect, it, vi } from "vitest";
+import { Type, type TSchema } from "typebox";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   // Hoisted mocks let the module under test import logger/provider runtime once
@@ -13,11 +14,13 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
+// mock-isolation: this unit owns log deduplication; provider inspection is supplied by the hook.
 vi.mock("../../plugins/provider-runtime.js", () => ({
   inspectProviderToolSchemasWithPlugin: mocks.inspectProviderToolSchemasWithPlugin,
   normalizeProviderToolSchemasWithPlugin: mocks.normalizeProviderToolSchemasWithPlugin,
 }));
 
+// mock-isolation: capture warnings without writing process logs.
 vi.mock("./logger.js", () => ({
   log: mocks.log,
 }));
@@ -26,6 +29,7 @@ const { logProviderToolSchemaDiagnostics, normalizeProviderToolSchemas } =
   await import("./tool-schema-runtime.js");
 
 describe("tool schema runtime diagnostics", () => {
+  beforeEach(() => vi.resetAllMocks());
   it("stays quiet when a provider reports no diagnostics", () => {
     mocks.inspectProviderToolSchemasWithPlugin.mockReturnValueOnce([]);
 
@@ -59,6 +63,38 @@ describe("tool schema runtime diagnostics", () => {
         allowRuntimePluginLoad: false,
       }),
     );
+  });
+
+  it("deduplicates by schema identity, provider and tool name without hiding changed schemas", () => {
+    const schema: TSchema = Type.Object({ payload: Type.Unsafe({ type: "object" }) });
+    const tools = [
+      {
+        name: "dedup",
+        label: "Dedup",
+        description: "",
+        parameters: schema,
+        execute: async () => ({ content: [], details: {} }),
+      },
+    ];
+    const diagnostics = [{ toolName: "dedup", toolIndex: 0, violations: ["payload"] }];
+    mocks.inspectProviderToolSchemasWithPlugin.mockReturnValue(diagnostics);
+    const warn = () => logProviderToolSchemaDiagnostics({ provider: "example", tools });
+    warn();
+    mocks.inspectProviderToolSchemasWithPlugin.mockReturnValue([
+      { toolName: "dedup", violations: ["payload"] },
+    ]);
+    warn();
+    expect(mocks.log.warn).toHaveBeenCalledTimes(1);
+    tools[0]!.parameters = Type.Object({ payload: Type.Object({}) });
+    warn();
+    expect(mocks.log.warn).toHaveBeenCalledTimes(2);
+    logProviderToolSchemaDiagnostics({ provider: "other", tools });
+    expect(mocks.log.warn).toHaveBeenCalledTimes(3);
+    mocks.inspectProviderToolSchemasWithPlugin.mockReturnValue([
+      { ...diagnostics[0], toolName: "renamed" },
+    ]);
+    warn();
+    expect(mocks.log.warn).toHaveBeenCalledTimes(4);
   });
 
   it("logs one summarized warning for provider tool schema diagnostics", () => {

@@ -215,22 +215,24 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
     }
     const warnedTools = new Set<string>();
     const diagnose = (tools: AnyAgentTool[]) => {
-      for (const diagnostic of inspectOpenDictionaryToolSchemas(tools)) {
-        if (warnedTools.has(diagnostic.toolName)) {
-          continue;
-        }
+      for (const diagnostic of inspectOpenDictionaryToolSchemas(tools, warnedTools)) {
         warnedTools.add(diagnostic.toolName);
+        const paths = diagnostic.violations.slice(0, 12);
+        const remaining = diagnostic.violations.length - paths.length;
+        const summary = paths.join(", ") + (remaining > 0 ? `, +${remaining} more` : "");
         const warning: PluginDiagnostic = {
           level: "warn",
           pluginId: record.id,
           source: record.source,
-          message: `tool "${diagnostic.toolName}": nested object without properties or additionalProperties will be closed on strict-compat providers (${diagnostic.violations.join(", ")}). Use explicit additionalProperties: true or openRecord(description) for dictionaries.`,
+          message: `tool "${diagnostic.toolName}": open object without declared properties, patternProperties, or additionalProperties will be closed on strict-compat providers (${summary}). Use explicit additionalProperties: true or openRecord(description) for dictionaries.`,
         };
         state.pushDiagnostic(warning);
         recordPluginLoadDiagnostic(warning);
       }
     };
     if (typeof tool !== "function" && !versioned) {
+      // Static schemas are inspected eagerly, best-effort; their accessors stay intact
+      // so unreadable schemas still reach per-tool runtime quarantine.
       diagnose([tool]);
     }
     const inspectedFactory: OpenClawPluginToolFactory = (ctx) => {
@@ -240,7 +242,6 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
       }
       return result;
     };
-    getPluginInstance(record)?.admitFactory(factory, "tool");
     getPluginInstance(record)?.admitFactory(inspectedFactory, "tool");
     registry.tools.push({
       ...createRegistration(record, {

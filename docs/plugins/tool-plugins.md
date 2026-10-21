@@ -134,8 +134,10 @@ describe useful arguments to the model. This applies to MCP tools too.
 ## Provider-portable dictionaries and validation
 
 Declare dictionaries explicitly. On native OpenAI Responses routes, compatibility
-normalization turns a nested bare `{ type: "object" }` into a closed empty
-object, rejecting every key. Use `additionalProperties: true`, or the SDK helper:
+normalization turns a nested `{ type: "object" }` or `Type.Object({})` without
+`additionalProperties` or non-empty `patternProperties` into a closed empty object,
+rejecting every key. Plain `Type.Record(Type.String(), valueSchema)` retains keys
+matched by its `patternProperties` and does not trigger this warning. Use `additionalProperties: true`, or the SDK helper:
 
 ```typescript
 import { openRecord } from "openclaw/plugin-sdk/tool-plugin";
@@ -146,12 +148,19 @@ const parameters = Type.Object({
 });
 ```
 
-Registration emits one warning per affected tool, listing the nested schema paths.
-Static tool warnings appear in `openclaw plugins inspect <id> --runtime` and doctor plugin
-diagnostics. Factory schemas are checked when the factory produces a tool, not by
-invoking factories during metadata-only inspection. These warnings do not reject
-registration or change normalization. For fixed records, declare `properties`
-and an explicit `additionalProperties` policy instead.
+Registration emits one warning per affected tool, listing up to 12 nested schema
+paths and the number of remaining paths. Static tool warnings appear in
+`openclaw plugins inspect <id> --runtime` and doctor plugin diagnostics. Factory
+schemas are checked only when the factory produces tools: warnings appear in
+doctor through its default `runtime-tool-schemas` check, which resolves tools,
+and in runtime status plugin health. They do not appear in
+`plugins inspect --runtime`, which never invokes factories. Inspection is
+best-effort: unreadable or circular schemas remain the runtime quarantine
+owner's responsibility, not a registration failure. Warnings do not reject
+registration or change normalization. Native OpenAI attempts also log
+`provider tool schema diagnostics`, deduplicated per provider, tool name and schema
+identity while the findings are unchanged; default core tools produce none. For fixed records, declare non-empty
+`properties` and an explicit `additionalProperties` policy instead.
 
 Provider schema support differs: Gemini cleanup removes `additionalProperties`
 and flattens mixed unions. An explicitly open dictionary preserves keys through
@@ -172,7 +181,10 @@ function prepareArguments(args: unknown) {
 
 Only this typed error thrown by `prepareArguments(args)` is classified as
 `errorKind: "argument-validation"`. Generic preparation failures and errors thrown by
-`execute` keep their existing error classification.
+`execute` keep their existing error classification. Typed preparation rejections
+participate in the existing argument-validation admission and tool-loop accounting.
+If the agent produces no reply, the fallback warning says "failed: invalid arguments"
+instead of "blocked".
 
 ## Optional and factory tools
 

@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import { buildProviderToolCompatFamilyHooks } from "../plugin-sdk/provider-tools.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
@@ -55,6 +56,24 @@ beforeEach(() => {
   setActivePluginRegistry(createSessionConversationTestRegistry());
 });
 afterEach(() => clearRuntimeConfigSnapshot());
+
+it("produces no native OpenAI schema findings for the default core tools", () => {
+  const tools = createOpenClawCodingTools({
+    config: {},
+    modelProvider: "openai",
+    modelId: "gpt-5.4",
+  });
+  expect(tools.map((tool) => tool.name)).toEqual(
+    expect.arrayContaining(["exec", "dashboard", "automations", "sessions_spawn"]),
+  );
+  expect(
+    buildProviderToolCompatFamilyHooks("openai").inspectToolSchemas({
+      provider: "openai",
+      modelApi: "openai-responses",
+      tools,
+    }),
+  ).toEqual([]);
+});
 
 it.each<[string, ToolOptions]>([
   [
