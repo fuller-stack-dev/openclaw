@@ -114,6 +114,13 @@ function validateCommandName(
   return null;
 }
 
+const commandCapabilityRules = {
+  subagents: { requireAuth: true, manifestContract: true },
+  models: { requireAuth: false, manifestContract: false },
+} satisfies Record<import("./plugin-command.types.js").PluginCommandRuntimeCapability, {
+  requireAuth: boolean; manifestContract: boolean;
+}>;
+
 function validatePluginCommandDefinition(
   command: OpenClawPluginCommandDefinition,
   opts?: { allowReservedCommandNames?: boolean },
@@ -140,11 +147,11 @@ function validatePluginCommandDefinition(
   if (command.runtimeCapabilities !== undefined) {
     if (
       !Array.isArray(command.runtimeCapabilities) ||
-      command.runtimeCapabilities.some((capability: unknown) => capability !== "subagents")
+      command.runtimeCapabilities.some((capability: unknown) => typeof capability !== "string" || !Object.hasOwn(commandCapabilityRules, capability))
     ) {
       return "Command runtimeCapabilities must contain supported capability names";
     }
-    if (command.runtimeCapabilities.length > 0 && command.requireAuth !== true) {
+    if (command.runtimeCapabilities.some((capability) => commandCapabilityRules[capability].requireAuth) && command.requireAuth !== true) {
       return "Command runtime capabilities require requireAuth: true";
     }
   }
@@ -338,7 +345,7 @@ export function registerPluginCommandInRegistry(
   const declaredCapabilities = commandRuntimeCapabilities ?? [];
   const undeclared =
     command.runtimeCapabilities?.filter(
-      (capability) => !declaredCapabilities.includes(capability),
+      (capability) => commandCapabilityRules[capability].manifestContract && !declaredCapabilities.includes(capability),
     ) ?? [];
   if (undeclared.length > 0) {
     return {
@@ -352,7 +359,7 @@ export function registerPluginCommandInRegistry(
   const normalizedCommand = {
     ...command,
     ...(command.runtimeCapabilities
-      ? { runtimeCapabilities: [...command.runtimeCapabilities] }
+      ? { runtimeCapabilities: Object.freeze([...new Set(command.runtimeCapabilities)]) }
       : {}),
     // The direct SDK registrar also supports host callers outside a managed instance.
     handler: wrapCurrentPluginInstance(

@@ -21,6 +21,7 @@ export function createRuntimeBase(): PluginRuntimeBase {
     capabilities: Object.freeze([
       GATEWAY_SERVER_CAPS.SENDER_RESTRICTED_HIDDEN_HELPERS,
       COMMAND_NATIVE_SUBAGENTS_CAPABILITY,
+      "requester-model-catalog-v1",
     ]),
     config: createRuntimeConfig(),
     llm: createRuntimeLlmFacade(getRuntimeConfig),
