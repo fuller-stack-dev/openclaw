@@ -21,6 +21,7 @@ import { disposePluginRegistryInstances } from "../../../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import type { NativeSubagentRuntime } from "../../../plugins/runtime/types-native-subagent.js";
 import type { PluginCommandContext } from "../../../plugins/types.js";
+import { withSessionTurn } from "../../../sessions/session-controller.admission.js";
 import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { resolveAgentWorkspaceDir } from "../../agent-scope.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
@@ -151,7 +152,7 @@ export function registerNativePluginCommandCases(options: NativePluginSpawnTestO
       handler,
     });
     builder.registry.plugins.push(record);
-    const invoke = async () => {
+    const invokeCommand = async () => {
       commandRun += 1;
       const entry = expectDefined(
         loadSessionEntry({ storePath: bound.storePath, sessionKey: parentSessionKey }),
@@ -216,6 +217,28 @@ export function registerNativePluginCommandCases(options: NativePluginSpawnTestO
         agentId: "main",
       });
       return reply;
+    };
+    const invoke = () => {
+      if (commandRun !== 0) {
+        return invokeCommand();
+      }
+      if (!bound.parent.registered) {
+        throw new Error("Command fixture requires its own requester source");
+      }
+      // A running command owns an admitted turn, not just a reserved RPC source.
+      return withSessionTurn(
+        {
+          sessionKey: parentSessionKey,
+          sessionId: "parent-session",
+          agentId: "main",
+          storePath: bound.storePath,
+          controllerInput: bound.parent.entry.input,
+        },
+        async (_operation, ownerSignal) => {
+          activeSignal = AbortSignal.any([bound.parent.controller.signal, ownerSignal]);
+          return await invokeCommand();
+        },
+      );
     };
     try {
       await capacityStarted.promise;
