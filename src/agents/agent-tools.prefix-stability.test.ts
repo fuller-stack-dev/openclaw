@@ -4,8 +4,8 @@ import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
-import { buildProviderToolCompatFamilyHooks } from "../plugin-sdk/provider-tools.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
+import { inspectOpenDictionaryToolSchemas } from "../plugins/tool-schema-diagnostics.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
@@ -57,7 +57,7 @@ beforeEach(() => {
 });
 afterEach(() => clearRuntimeConfigSnapshot());
 
-it("produces no native OpenAI schema findings for the default core tools", () => {
+it("produces no raw dictionary findings for the default core tools", () => {
   const tools = createOpenClawCodingTools({
     config: {},
     modelProvider: "openai",
@@ -66,13 +66,7 @@ it("produces no native OpenAI schema findings for the default core tools", () =>
   expect(tools.map((tool) => tool.name)).toEqual(
     expect.arrayContaining(["exec", "dashboard", "automations", "sessions_spawn"]),
   );
-  expect(
-    buildProviderToolCompatFamilyHooks("openai").inspectToolSchemas({
-      provider: "openai",
-      modelApi: "openai-responses",
-      tools,
-    }),
-  ).toEqual([]);
+  expect(inspectOpenDictionaryToolSchemas(tools)).toEqual([]);
 });
 
 it.each<[string, ToolOptions]>([

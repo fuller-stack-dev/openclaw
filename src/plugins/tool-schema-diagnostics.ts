@@ -2,8 +2,8 @@ import { findCompatClosedObjectPaths } from "@openclaw/ai/internal/tool-schema";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import type { ProviderToolSchemaDiagnostic } from "./provider-replay.types.js";
 
-// Admitted tool schemas are immutable. Share scans across registration and native OpenAI
-// attempts, but keep tool names/indices out of the schema-identity cache.
+// Admitted tool schemas are immutable. Share registration scans by schema identity,
+// but keep tool names/indices out of the cache.
 const schemaPaths = new WeakMap<object, string[]>();
 
 /** Best-effort warnings; runtime projection owns unreadable/non-serializable schemas. */

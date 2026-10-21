@@ -61,33 +61,9 @@ export function normalizeProviderToolSchemas<
     : params.tools;
 }
 
-// Schemas are immutable once admitted. Weak keys do not retain retired tool catalogs.
-const loggedSchemaDiagnostics = new WeakMap<object, Set<string>>();
-
 export function logProviderToolSchemaDiagnostics(params: ProviderToolSchemaParams): void {
-  const inspected = inspectProviderToolSchemasWithPlugin(buildProviderToolSchemaParams(params));
-  if (!Array.isArray(inspected)) {
-    return;
-  }
-  const diagnostics = inspected.filter((diagnostic) => {
-    const tool =
-      diagnostic.toolIndex === undefined
-        ? params.tools.find((candidate) => candidate.name === diagnostic.toolName)
-        : params.tools[diagnostic.toolIndex];
-    const schema = tool?.parameters;
-    if (!schema || typeof schema !== "object") {
-      return true;
-    }
-    const key = JSON.stringify([params.provider, diagnostic.toolName, diagnostic.violations]);
-    const logged = loggedSchemaDiagnostics.get(schema) ?? new Set<string>();
-    if (logged.has(key)) {
-      return false;
-    }
-    logged.add(key);
-    loggedSchemaDiagnostics.set(schema, logged);
-    return true;
-  });
-  if (diagnostics.length === 0) {
+  const diagnostics = inspectProviderToolSchemasWithPlugin(buildProviderToolSchemaParams(params));
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) {
     return;
   }
 

@@ -137,7 +137,9 @@ Declare dictionaries explicitly. On native OpenAI Responses routes, compatibilit
 normalization turns a nested `{ type: "object" }` or `Type.Object({})` without
 `additionalProperties` or non-empty `patternProperties` into a closed empty object,
 rejecting every key. Plain `Type.Record(Type.String(), valueSchema)` retains keys
-matched by its `patternProperties` and does not trigger this warning. Use `additionalProperties: true`, or the SDK helper:
+matched by its `patternProperties` and does not trigger this warning. Other pattern
+maps admit only matching keys after normalization. Use `additionalProperties: true`,
+or the SDK helper:
 
 ```typescript
 import { openRecord } from "openclaw/plugin-sdk/tool-plugin";
@@ -157,10 +159,12 @@ and in runtime status plugin health. They do not appear in
 `plugins inspect --runtime`, which never invokes factories. Inspection is
 best-effort: unreadable or circular schemas remain the runtime quarantine
 owner's responsibility, not a registration failure. Warnings do not reject
-registration or change normalization. Native OpenAI attempts also log
-`provider tool schema diagnostics`, deduplicated per provider, tool name and schema
-identity while the findings are unchanged; default core tools produce none. For fixed records, declare non-empty
-`properties` and an explicit `additionalProperties` policy instead.
+registration or change normalization. These warnings cover only tools passed to
+`api.registerTool`, including its factories. MCP and bundled tools assembled outside
+that API are not covered. Native OpenAI runtime inspection happens after normalization
+and emits no open-object warning; extending coverage to those tools is a follow-up.
+For fixed records, declare non-empty `properties` and an explicit
+`additionalProperties` policy instead.
 
 Provider schema support differs: Gemini cleanup removes `additionalProperties`
 and flattens mixed unions. An explicitly open dictionary preserves keys through

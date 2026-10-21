@@ -14,7 +14,6 @@ import {
 } from "@openclaw/ai/internal/tool-schema";
 import { isRecord as isSchemaRecord } from "@openclaw/normalization-core/record-coerce";
 import type { TSchema } from "typebox";
-import { inspectOpenDictionaryToolSchemas } from "../plugins/tool-schema-diagnostics.js";
 import {
   mergeLiteralSchemas,
   readLiteralSchemaValues,
@@ -225,9 +224,9 @@ export function inspectOpenAIToolSchemas(
   if (!shouldApplyOpenAIToolCompat(ctx)) {
     return [];
   }
-  // Optional-heavy schemas can fall back to strict: false, but compatibility
-  // normalization still closes bare nested objects before that decision.
-  return inspectOpenDictionaryToolSchemas(ctx.tools);
+  // Compatibility normalization runs before runtime inspection. Registration
+  // diagnostics own open-object warnings while the raw schemas are available.
+  return [];
 }
 
 /**

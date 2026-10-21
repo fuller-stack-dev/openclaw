@@ -5,6 +5,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Type } from "typebox";
 import { expect, it } from "vitest";
 import { findSourceImportBackedges } from "../../test/helpers/source-import-closure.js";
+import { inspectOpenDictionaryToolSchemas } from "../plugins/tool-schema-diagnostics.js";
 import {
   buildProviderToolCompatFamilyHooks,
   inspectDeepSeekToolSchemas,
@@ -508,6 +509,14 @@ it("skips openai strict-tool normalization on non-native routes", () => {
   expect(inspectOpenAITools(tools, route)).toStrictEqual([]);
 });
 
+it("leaves raw dictionary warnings to registration, not post-normalization inspection", () => {
+  const tools = [tool(objectSchema({ payload: { type: "object" } }))];
+  expect(inspectOpenDictionaryToolSchemas(tools)).toHaveLength(1);
+  expect(inspectOpenAITools(tools)).toEqual([]);
+  const normalized = normalizeOpenAITools(tools);
+  expect(openAIHooks.inspectToolSchemas({ ...providerContext([]), tools: normalized })).toEqual([]);
+});
+
 it.each([
   ["bare", { type: "object" }, true],
   ["Type.Object({})", Type.Object({}), true],
@@ -543,14 +552,14 @@ it.each([
     };
     const stoppedValidating = acceptsKeys(original) && !acceptsKeys(normalized);
     expect(stoppedValidating).toBe(losesKeys);
-    expect(inspectOpenAITools([original]).length > 0).toBe(stoppedValidating);
+    expect(inspectOpenDictionaryToolSchemas([original]).length > 0).toBe(stoppedValidating);
   },
 );
 
-it("reports one diagnostic before native OpenAI closes a bare nested object", () => {
+it("reports one registration finding before compatibility closes a bare nested object", () => {
   const parameters = objectSchema({ payload: { type: "object" } });
   const tools = [tool(parameters)];
-  expect(inspectOpenAITools(tools)).toEqual([
+  expect(inspectOpenDictionaryToolSchemas(tools)).toEqual([
     {
       toolName: "demo",
       toolIndex: 0,
@@ -569,13 +578,12 @@ it("reports one diagnostic before native OpenAI closes a bare nested object", ()
       arguments: { payload: { preserved: true } },
     }),
   ).toThrow();
-  expect(inspectOpenAITools(tools, { baseUrl: "https://proxy.example/v1" })).toEqual([]);
 });
 
 it("preserves explicitly open dictionary keys through native OpenAI normalization and validation", () => {
   const parameters = objectSchema({ payload: openRecord("Arbitrary metadata") });
   const tools = [tool(parameters)];
-  expect(inspectOpenAITools(tools)).toEqual([]);
+  expect(inspectOpenDictionaryToolSchemas(tools)).toEqual([]);
   const normalized = normalizeOpenAITools(tools)[0]!;
   const args = { payload: { label: "kept", count: 2, nested: { enabled: true } } };
   expect(normalized.parameters).toMatchObject({
@@ -604,11 +612,14 @@ it.each([false, true])(
     };
     const parameters = objectSchema({ payload });
     const tools = [tool(parameters, "first")];
-    inspectOpenAITools(tools);
+    inspectOpenDictionaryToolSchemas(tools);
     const afterFirstScan = reads;
     expect(afterFirstScan).toBeGreaterThan(0);
     expect(
-      inspectOpenAITools([tool(Type.Object({}), "clean"), tool(parameters, "second")]),
+      inspectOpenDictionaryToolSchemas([
+        tool(Type.Object({}), "clean"),
+        tool(parameters, "second"),
+      ]),
     ).toEqual(
       open
         ? []
@@ -636,7 +647,7 @@ it("combines schema paths into one diagnostic without inspecting literal data", 
       }),
     ),
   ];
-  expect(inspectOpenAITools(tools)).toEqual([
+  expect(inspectOpenDictionaryToolSchemas(tools)).toEqual([
     {
       toolName: "demo",
       toolIndex: 0,
@@ -647,5 +658,5 @@ it("combines schema paths into one diagnostic without inspecting literal data", 
       ],
     },
   ]);
-  expect(inspectOpenAITools([tool({ type: "object" })])).toEqual([]);
+  expect(inspectOpenDictionaryToolSchemas([tool({ type: "object" })])).toEqual([]);
 });
