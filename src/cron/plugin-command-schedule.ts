@@ -1,11 +1,11 @@
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { z } from "zod";
-import {
-  decodeQueuedOperatorRecoverySource,
-  type QueuedOperatorRecoverySource,
-} from "../gateway/operator-run-recovery-source.codec.js";
+import { decodeQueuedOperatorRecoverySource } from "../gateway/operator-run-recovery-source.codec.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
-import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "./plugin-command-creation.js";
+import {
+  PLUGIN_COMMAND_SCHEDULE_MESSAGE,
+  type PluginCommandSchedule,
+} from "./plugin-command-schedule.types.js";
 import type { CronStoredJob } from "./types.js";
 
 export const MAX_PLUGIN_COMMAND_SCHEDULE_BYTES = 65_536;
@@ -26,31 +26,6 @@ let cachedHostProcessId: string | undefined;
 export function currentPluginCommandHostProcessId(): string {
   return (cachedHostProcessId ??= `${process.pid}:${getFileLockProcessStartTime(process.pid) ?? "unknown"}`);
 }
-
-/** Host-captured invocation facts, never a public cron payload or executable grant. */
-export type PluginCommandSchedule = {
-  version: 1;
-  pluginId: string;
-  pluginIncarnation: string;
-  hostProcessId: string;
-  pluginSource: string;
-  pluginRoot?: string;
-  pluginVersion?: string;
-  command: string;
-  args?: string;
-  channel: string;
-  parent: {
-    agentId: string;
-    sessionKey: string;
-    sessionId: string;
-    lifecycleRevision?: string;
-  };
-  sourceRunId: string;
-  operatorSource: QueuedOperatorRecoverySource;
-  toolsAllow: string[];
-  deadlineAtMs: number;
-  maxRuns: number;
-};
 
 const boundedString = z
   .string()

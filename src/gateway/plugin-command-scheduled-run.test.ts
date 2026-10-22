@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "../cron/plugin-command-creation.js";
 import { pluginCommandSchedule } from "../cron/plugin-command-schedule.test-support.js";
+import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "../cron/plugin-command-schedule.types.js";
 import type { CronStoredJob } from "../cron/types.js";
 import { registerPluginCommandInRegistry } from "../plugins/command-registration.js";
 import { createPluginRecord } from "../plugins/loader-records.js";

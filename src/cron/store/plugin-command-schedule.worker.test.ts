@@ -10,9 +10,9 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
-import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "../plugin-command-creation.js";
 import { MAX_ACTIVE_PLUGIN_COMMAND_SCHEDULES_PER_PARENT } from "../plugin-command-schedule.js";
 import { pluginCommandSchedule } from "../plugin-command-schedule.test-support.js";
+import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "../plugin-command-schedule.types.js";
 import type { CronJobCreate, CronStoredJob } from "../types.js";
 import type { CronJobMutation } from "./job-mutations.types.js";
 import { queueJob, queueStore, requestFor, scheduled } from "./run-queue.test-support.js";

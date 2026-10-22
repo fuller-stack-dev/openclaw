@@ -1,7 +1,7 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { hashCronJobDefinition } from "../definition-hash.js";
-import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "../plugin-command-creation.js";
+import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "../plugin-command-schedule.types.js";
 import { stripCronPinnedExecGrant } from "../scheduled-tool-policy.js";
 import { parseCronStreamSandboxTarget } from "../stream-sandbox-target.js";
 import type { CronStoredJob, CronStoreFile } from "../types.js";

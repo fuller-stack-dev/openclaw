@@ -9,9 +9,9 @@ import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
-import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "./plugin-command-creation.js";
-import type { PluginCommandSchedule } from "./plugin-command-schedule.js";
 import { pluginCommandSchedule } from "./plugin-command-schedule.test-support.js";
+import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "./plugin-command-schedule.types.js";
+import type { PluginCommandSchedule } from "./plugin-command-schedule.types.js";
 import { projectCronRunHistoryPage } from "./run-history.js";
 import {
   createCronServiceWithStateForTest,

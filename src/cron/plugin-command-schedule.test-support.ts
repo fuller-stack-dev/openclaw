@@ -1,7 +1,5 @@
-import {
-  currentPluginCommandHostProcessId,
-  type PluginCommandSchedule,
-} from "./plugin-command-schedule.js";
+import { currentPluginCommandHostProcessId } from "./plugin-command-schedule.js";
+import type { PluginCommandSchedule } from "./plugin-command-schedule.types.js";
 
 export function pluginCommandSchedule(
   nowMs: number,

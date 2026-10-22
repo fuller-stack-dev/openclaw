@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { getInvalidPersistedCronJobReason } from "./persisted-shape.js";
-import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "./plugin-command-creation.js";
 import {
   currentPluginCommandHostProcessId,
   decodePluginCommandSchedule,
   getPluginCommandRunBudgetError,
 } from "./plugin-command-schedule.js";
 import { pluginCommandSchedule } from "./plugin-command-schedule.test-support.js";
+import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "./plugin-command-schedule.types.js";
 import { toPublicCronJob } from "./public-job.js";
 import { stripJobRuntimeFields } from "./store/job-config-codec.js";
 import { projectCronJobThroughStorageCodec, rowToCronJob } from "./store/row-codec.js";

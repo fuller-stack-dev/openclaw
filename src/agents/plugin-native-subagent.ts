@@ -11,10 +11,10 @@ import type {
 } from "../plugins/runtime/types-native-subagent.js";
 import type { PluginCommandScheduledTurns } from "../plugins/runtime/types-scheduled-turns.js";
 import { normalizeAcceptedSessionSpawnResult } from "./accepted-session-spawn.js";
-import type { AdmittedRunContext, AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
+import type { AdmittedRunContext } from "./admitted-run-context.js";
 import { runWithToolExecutionValidation } from "./agent-tools.execution-validation.js";
-import type { InternalCodingToolsOptions } from "./agent-tools.options.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
+import type { NativeSubagentRequestSource } from "./plugin-native-subagent.types.js";
 import { preparePluginCommandScheduledTurns } from "./plugin-scheduled-command.js";
 import { matchesSubagentRequesterSession } from "./subagents/registry/subagent-registry-queries.js";
 import {
@@ -43,23 +43,6 @@ import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
 } from "./tools/gateway-caller-context.js";
-
-export type NativeSubagentRequestSource = {
-  options: InternalCodingToolsOptions & {
-    agentId: string;
-    sessionKey: string;
-    sessionId: string;
-    runId: string;
-  };
-  /** Required to refresh a supplied owner-prepared capability profile without dropping inputs. */
-  prepareCurrentCapabilityProfile?: (
-    config: OpenClawConfig,
-  ) => Promise<NonNullable<InternalCodingToolsOptions["conversationCapabilityProfile"]>>;
-  lifecycleRevision?: string;
-  operatorAuthority: AdmittedRunOperatorAuthority;
-  assertCurrent: () => void;
-  prepareSpawn: (assertCurrent: () => void) => Promise<AdmittedRunContext>;
-};
 
 /** Adapt the existing authorized native tool surface; do not create a second spawn owner. */
 export function createRequestNativeSubagentRuntime(

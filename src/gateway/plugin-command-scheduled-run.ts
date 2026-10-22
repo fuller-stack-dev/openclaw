@@ -22,11 +22,11 @@ import {
   acquireCronInferenceAuthorization,
   captureCronInferenceBinding,
 } from "../cron/inference-binding.runtime.js";
-import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "../cron/plugin-command-creation.js";
+import { decodePluginCommandSchedule } from "../cron/plugin-command-schedule.js";
 import {
-  decodePluginCommandSchedule,
+  PLUGIN_COMMAND_SCHEDULE_MESSAGE,
   type PluginCommandSchedule,
-} from "../cron/plugin-command-schedule.js";
+} from "../cron/plugin-command-schedule.types.js";
 import { prepareCronRunAdmission } from "../cron/run-admission.js";
 import { resolveCronRequesterExecutionRevision } from "../cron/service/jobs-tool-policy.js";
 import type { CronServiceDeps } from "../cron/service/state.js";

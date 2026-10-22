@@ -1,9 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import {
-  PLUGIN_COMMAND_SCHEDULE_MESSAGE,
-  withPluginCommandScheduleCreation,
-} from "../cron/plugin-command-creation.js";
+import { withPluginCommandScheduleCreation } from "../cron/plugin-command-creation.js";
 import {
   currentPluginCommandHostProcessId,
   decodePluginCommandSchedule,
@@ -12,6 +9,7 @@ import {
   MAX_PLUGIN_COMMAND_SCHEDULES_PER_INVOCATION,
   PLUGIN_COMMAND_SCHEDULE_TOOL_NAME,
 } from "../cron/plugin-command-schedule.js";
+import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "../cron/plugin-command-schedule.types.js";
 import type { CronJobCreate } from "../cron/types.js";
 import { captureQueuedOperatorRecoverySource } from "../gateway/operator-run-recovery-source.js";
 import { pluginCommandSupportsChannel } from "../plugins/plugin-command-metadata.js";
@@ -21,7 +19,7 @@ import { getPluginRegistryForContext } from "../plugins/runtime/gateway-request-
 import type { PluginCommandScheduledTurns } from "../plugins/runtime/types-scheduled-turns.js";
 import { runWithToolExecutionValidation } from "./agent-tools.execution-validation.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
-import type { NativeSubagentRequestSource } from "./plugin-native-subagent.js";
+import type { NativeSubagentRequestSource } from "./plugin-native-subagent.types.js";
 import { AUTOMATIONS_TOOL_NAME } from "./tools/automations-tool-name.js";
 
 /** Command-only adapter over the existing final native tool surface and cron.add producer. */

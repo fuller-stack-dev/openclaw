@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import type { PluginCommandSchedule } from "./plugin-command-schedule.js";
+import {
+  PLUGIN_COMMAND_SCHEDULE_MESSAGE,
+  type PluginCommandSchedule,
+} from "./plugin-command-schedule.types.js";
 import type { CronJobCreate, CronStoredJob } from "./types.js";
 
-/** Reserved host payload: a lost private envelope must never become an ordinary model prompt. */
-export const PLUGIN_COMMAND_SCHEDULE_MESSAGE = "[plugin-command-scheduled-turn:v1]";
 const TOKEN_FIELD = "_pluginCommandCreation";
 
 type Creation = {
