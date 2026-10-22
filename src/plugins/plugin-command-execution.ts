@@ -98,9 +98,11 @@ async function buildRuntimeContext(
   return {
     ...(subagents
       ? {
+          // Project the public helpers only: scheduling stays outside the subagents object.
           subagents: {
             spawn: (request) => subagents.spawn(request),
             collect: (request) => subagents.collect(request),
+            ...(subagents.list ? { list: subagents.list } : {}),
           },
         }
       : {}),

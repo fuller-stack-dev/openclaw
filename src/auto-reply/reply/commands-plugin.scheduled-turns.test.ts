@@ -497,6 +497,10 @@ describe("requester-admitted scheduled commands", () => {
       let accepted: { jobId: string } | undefined;
       let schedulingError: unknown;
       fixture.handler.mockImplementation(async (ctx) => {
+        // Scheduling stays outside the native helpers, which keep their optional list.
+        const native = expectDefined(ctx.runtimeContext?.subagents, "native helpers");
+        expect(Object.keys(native).toSorted()).toEqual(["collect", "list", "spawn"]);
+        await expect(expectDefined(native.list, "native child list")()).resolves.toEqual([]);
         const schedules = expectDefined(
           ctx.runtimeContext?.scheduledTurns,
           "live schedule capability",
