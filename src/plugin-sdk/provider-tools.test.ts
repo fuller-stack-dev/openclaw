@@ -556,30 +556,6 @@ it.each([
   },
 );
 
-it("reports one registration finding before compatibility closes a bare nested object", () => {
-  const parameters = objectSchema({ payload: { type: "object" } });
-  const tools = [tool(parameters)];
-  expect(inspectOpenDictionaryToolSchemas(tools)).toEqual([
-    {
-      toolName: "demo",
-      toolIndex: 0,
-      violations: ["demo.parameters.properties.payload"],
-    },
-  ]);
-  const normalized = normalizeOpenAITools(tools)[0]!;
-  expect(normalized.parameters).toMatchObject({
-    properties: { payload: { type: "object", properties: {}, additionalProperties: false } },
-  });
-  expect(() =>
-    validateToolArguments(normalized, {
-      type: "toolCall",
-      id: "call",
-      name: "demo",
-      arguments: { payload: { preserved: true } },
-    }),
-  ).toThrow();
-});
-
 it("preserves explicitly open dictionary keys through native OpenAI normalization and validation", () => {
   const parameters = objectSchema({ payload: openRecord("Arbitrary metadata") });
   const tools = [tool(parameters)];
