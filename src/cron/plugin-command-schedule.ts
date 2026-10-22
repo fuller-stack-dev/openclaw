@@ -30,14 +30,6 @@ export function currentPluginCommandHostProcessId(): string {
   return (cachedHostProcessId ??= `${process.pid}:${getFileLockProcessStartTime(process.pid) ?? "unknown"}`);
 }
 
-/**
- * In-process restart simulation only: a real restart is a new process with a new identity.
- * Passing undefined restores the identity of this process.
- */
-export function setPluginCommandHostProcessIdForTest(value: string | undefined): void {
-  cachedHostProcessId = value;
-}
-
 const boundedString = z
   .string()
   .min(1)

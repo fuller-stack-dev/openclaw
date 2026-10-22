@@ -14,7 +14,6 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { setPluginCommandHostProcessIdForTest } from "../../cron/plugin-command-schedule.js";
 import { CronService } from "../../cron/service.js";
 import { createNoopLogger } from "../../cron/service.test-harness.js";
 import type { CronServiceDeps } from "../../cron/service/state.js";
@@ -85,9 +84,9 @@ export type Fixture = {
   /** The scheduler of the current Gateway process; replaced by `restart`. */
   readonly cron: CronService;
   /**
-   * Restarts the Gateway in-process: the scheduler stops, plugin instances retire, the process
-   * identity changes, `change` may edit config or plugin files, then plugins load and a new
-   * scheduler starts on the same state database through its startup recovery.
+   * Restarts the Gateway in-process: the scheduler stops, plugin instances retire, `change` may
+   * edit config or plugin files (and the caller's mocked process identity), then plugins load and
+   * a new scheduler starts on the same state database through its startup recovery.
    */
   restart: (
     change?: (cfg: OpenClawConfig, pluginDir: string) => Promise<void> | void,
@@ -194,7 +193,6 @@ export async function withCommandPlugin(
       resolveGatewayContext: () => gateway,
       resolvePluginRegistry: () => registry,
     });
-    let restarts = 0;
     const createCron = () =>
       new CronService({
         scheduler: createTestGatewayScheduler(),
@@ -332,8 +330,6 @@ export async function withCommandPlugin(
                 await expect(
                   disposePluginRegistryInstances(expectDefined(registry, "previous registry")),
                 ).resolves.toMatchObject({ failures: [] });
-                restarts += 1;
-                setPluginCommandHostProcessIdForTest(`restarted-gateway-${restarts}`);
                 await change?.(cfg, pluginDir);
                 registry = loadOpenClawPlugins({
                   config: cfg,
@@ -410,7 +406,6 @@ export async function withCommandPlugin(
     } finally {
       cron.stop();
       await cron.waitForIdle();
-      setPluginCommandHostProcessIdForTest(undefined);
       agentTurnRuntime?.close();
       Reflect.deleteProperty(globalThis, bridge);
       resetGlobalHookRunner();

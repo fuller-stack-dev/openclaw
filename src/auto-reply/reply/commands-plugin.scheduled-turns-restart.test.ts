@@ -12,6 +12,17 @@ import {
 
 // No scheduled occurrence may reach an ordinary session prompt or the embedded model runner.
 const guards = vi.hoisted(() => ({ embeddedRuns: 0 }));
+// A real restart is a new Gateway process. In-process, only the process identity the Gateway
+// thread reports to the scheduler changes; the claim, plugins and state database are real.
+const gatewayProcess = vi.hoisted(() => ({ id: undefined as string | undefined, restarts: 0 }));
+vi.mock("../../cron/plugin-command-schedule.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../cron/plugin-command-schedule.js")>();
+  return {
+    ...actual,
+    currentPluginCommandHostProcessId: () =>
+      gatewayProcess.id ?? actual.currentPluginCommandHostProcessId(),
+  };
+});
 vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/embedded-agent.js")>()),
   runEmbeddedAgent: async () => {
@@ -23,11 +34,22 @@ vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
 afterEach(() => {
   expect(guards.embeddedRuns, "no embedded model run").toBe(0);
   guards.embeddedRuns = 0;
+  gatewayProcess.id = undefined;
+  gatewayProcess.restarts = 0;
   resetGlobalHookRunner();
   resetPluginRuntimeStateForTest();
 });
 
 type RestartChange = NonNullable<Parameters<Fixture["restart"]>[0]>;
+
+/** Restarts as a new Gateway process, applying `change` while it is down. */
+async function restartGateway(fixture: Fixture, change?: RestartChange) {
+  await fixture.restart(async (cfg, pluginDir) => {
+    gatewayProcess.restarts += 1;
+    gatewayProcess.id = `restarted-gateway-${gatewayProcess.restarts}`;
+    await change?.(cfg, pluginDir);
+  });
+}
 
 /** One occurrence before the restart spends the first of the two allowed attempts. */
 async function acceptAndRunOnce(fixture: Fixture) {
@@ -43,7 +65,7 @@ describe("requester-admitted scheduled commands across a Gateway restart", () =>
     await withCommandPlugin(async (fixture) => {
       const id = await acceptAndRunOnce(fixture);
       const original = fixture.pluginIncarnation();
-      await fixture.restart();
+      await restartGateway(fixture);
       expect(fixture.pluginIncarnation()).toBeDefined();
       expect(fixture.pluginIncarnation()).not.toBe(original);
       fixture.handler.mockImplementation((ctx) => ({ text: "after restart: " + ctx.args }));
@@ -67,7 +89,7 @@ describe("requester-admitted scheduled commands across a Gateway restart", () =>
         },
       });
       // A completed schedule stays completed across another restart.
-      await fixture.restart();
+      await restartGateway(fixture);
       await expect(fixture.cron.run(id, "force")).resolves.toMatchObject({ ran: false });
       expect(fixture.handler).toHaveBeenCalledTimes(1);
       expect(fixture.scheduledResults).toHaveLength(2);
@@ -78,7 +100,7 @@ describe("requester-admitted scheduled commands across a Gateway restart", () =>
     await withCommandPlugin(async (fixture) => {
       const id = await createContinuation(fixture);
       await fixture.cron.update(id, { enabled: false });
-      await fixture.restart();
+      await restartGateway(fixture);
       await expect(fixture.cron.run(id, "force")).resolves.toMatchObject({ ran: false });
       expect(fixture.handler).toHaveBeenCalledTimes(1);
       expect(fixture.scheduledResults).toEqual([]);
@@ -94,7 +116,7 @@ describe("requester-admitted scheduled commands across a Gateway restart", () =>
   ])("rechecks the requester after the restart and refuses a %s one", async (_label, revoke) => {
     await withCommandPlugin(async (fixture) => {
       const id = await acceptAndRunOnce(fixture);
-      await fixture.restart();
+      await restartGateway(fixture);
       revoke(fixture);
       const inputs = await fixture.userInputs();
       await fixture.cron.run(id, "force");
@@ -143,7 +165,7 @@ describe("requester-admitted scheduled commands across a Gateway restart", () =>
       await withCommandPlugin(async (fixture) => {
         const id = await createContinuation(fixture);
         fixture.handler.mockClear();
-        await fixture.restart(change);
+        await restartGateway(fixture, change);
         // A changed plugin loads, but a new instance whose code no longer matches the schedule.
         expect(fixture.pluginIncarnation() !== undefined).toBe(loaded);
         await fixture.cron.run(id, "force");
