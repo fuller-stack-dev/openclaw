@@ -9,11 +9,13 @@ import type {
   NativeSubagentRuntime,
   NativeSubagentSelection,
 } from "../plugins/runtime/types-native-subagent.js";
+import type { PluginCommandScheduledTurns } from "../plugins/runtime/types-scheduled-turns.js";
 import { normalizeAcceptedSessionSpawnResult } from "./accepted-session-spawn.js";
 import type { AdmittedRunContext, AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import { runWithToolExecutionValidation } from "./agent-tools.execution-validation.js";
 import type { InternalCodingToolsOptions } from "./agent-tools.options.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
+import { preparePluginCommandScheduledTurns } from "./plugin-scheduled-command.js";
 import { matchesSubagentRequesterSession } from "./subagents/registry/subagent-registry-queries.js";
 import {
   getSwarmRunByLaunchReplayKey,
@@ -36,6 +38,7 @@ import {
   readNativeSubagentCollection,
   withNativeSubagentCollectorOwner,
 } from "./tools/agents-wait-tool.js";
+import { AUTOMATIONS_TOOL_NAME } from "./tools/automations-tool-name.js";
 import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
@@ -62,7 +65,10 @@ export type NativeSubagentRequestSource = {
 export function createRequestNativeSubagentRuntime(
   source: NativeSubagentRequestSource,
   guard: { pluginId: string; assertCurrent: () => void },
-): NativeSubagentRuntime & { prepareCommand: () => Promise<boolean> } {
+): NativeSubagentRuntime & {
+  prepareCommand: () => Promise<boolean>;
+  prepareScheduledTurns: (channel: string) => Promise<PluginCommandScheduledTurns | undefined>;
+} {
   const scope = getPluginRuntimeGatewayRequestScope();
   const resolveGatewayContext =
     scope?.resolveGatewayContext ?? scope?.context?.resolveGatewayContext;
@@ -210,6 +216,20 @@ export function createRequestNativeSubagentRuntime(
     return result;
   };
   return {
+    async prepareScheduledTurns(channel) {
+      const surface = await tools();
+      if (!admitted || !surface.some((tool) => tool.name === AUTOMATIONS_TOOL_NAME)) {
+        return undefined;
+      }
+      return preparePluginCommandScheduledTurns({
+        source,
+        pluginId: guard.pluginId,
+        channel,
+        assertCurrent,
+        tools,
+        withCaller,
+      });
+    },
     async prepareCommand() {
       const surface = await tools();
       if (
