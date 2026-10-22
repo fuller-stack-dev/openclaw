@@ -386,7 +386,7 @@ async function withCommandPlugin(
     } finally {
       cron.stop();
       await cron.waitForIdle();
-      await agentTurnRuntime?.close();
+      agentTurnRuntime?.close();
       Reflect.deleteProperty(globalThis, bridge);
       resetGlobalHookRunner();
       resetPluginRuntimeStateForTest();
