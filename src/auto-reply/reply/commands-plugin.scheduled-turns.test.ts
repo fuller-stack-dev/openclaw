@@ -22,9 +22,11 @@ import type { CronServiceDeps } from "../../cron/service/state.js";
 import { loadCronStore } from "../../cron/store.js";
 import type { CronAgentExecutionStarted } from "../../cron/types.js";
 import { createAgentRuntimeApprovalAuthorityValidator } from "../../gateway/agent-runtime-approval-authority.js";
+import { invalidateOperatorRolePolicy } from "../../gateway/operator-role-policy.js";
 import { createScheduledGatewayRunner } from "../../gateway/scheduled-run-gateway-context.js";
 import { createDirectChatContext } from "../../gateway/server-chat.agent-events.test-helpers.js";
 import { createGatewayCronAgentJobRunner } from "../../gateway/server-cron-agent-run.js";
+import { createGatewayInstanceRuntime } from "../../gateway/server-instance-runtime.js";
 import { createRequestGatewayMethodRegistry } from "../../gateway/server-methods.js";
 import {
   initializeGlobalHookRunner,
@@ -98,6 +100,10 @@ type Fixture = {
   assistantOutputs: () => Promise<unknown[]>;
   restrictParentTools: () => Promise<unknown>;
   revokeOwner: () => void;
+  /** Commits a role downgrade and publishes it, as the `users.setRole` Gateway method does. */
+  demoteOwner: () => void;
+  /** Lets a launched child reach its agent turn through the real Gateway instance runtime. */
+  installAgentTurnFacade: () => void;
   readJobs: () => Promise<import("../../cron/types.js").CronStoredJob[]>;
   cron: CronService;
   scheduledResults: Array<Awaited<ReturnType<CronServiceDeps["runIsolatedAgentJob"]>>>;
@@ -185,6 +191,7 @@ async function withCommandPlugin(
     };
     const cronStorePath = state.path("cron/jobs.json");
     let registry: PluginRegistry | undefined;
+    let agentTurnRuntime: ReturnType<typeof createGatewayInstanceRuntime> | undefined;
     const scheduledResults: Fixture["scheduledResults"] = [];
     const sessionEventPrompts: string[] = [];
     let fixtureRef: Fixture | undefined;
@@ -355,6 +362,22 @@ async function withCommandPlugin(
                 ),
               readJobs: async () => (await loadCronStore(cronStorePath)).jobs,
               revokeOwner: () => setUserProfileRole(admins[0]!.profile.id, "member"),
+              demoteOwner: () => {
+                setUserProfileRole(admins[0]!.profile.id, "member");
+                invalidateOperatorRolePolicy(admins[0]!.profile.id);
+              },
+              installAgentTurnFacade: () => {
+                const methodRegistry = createRequestGatewayMethodRegistry();
+                const runtime = createGatewayInstanceRuntime({
+                  getContext: () => gateway,
+                  getMethodRegistry: () => methodRegistry,
+                  isDispatchAvailable: () => true,
+                });
+                agentTurnRuntime = runtime;
+                gateway.createAgentTurnFacade = runtime.createAgentTurnFacade;
+                gateway.recoveryRuntime = runtime.recovery;
+                gateway.getGatewayMethodRegistry = () => methodRegistry;
+              },
             }),
           ),
       );
@@ -363,6 +386,7 @@ async function withCommandPlugin(
     } finally {
       cron.stop();
       await cron.waitForIdle();
+      await agentTurnRuntime?.close();
       Reflect.deleteProperty(globalThis, bridge);
       resetGlobalHookRunner();
       resetPluginRuntimeStateForTest();
@@ -724,6 +748,75 @@ describe("native scheduled command execution", () => {
       expect(subagentRuns.get(expectDefined(childRunId, "accepted child run"))).toMatchObject({
         requesterSessionKey: parent.sessionKey,
         requesterTurnRunId: expectDefined(scheduledRunId, "scheduled occurrence run"),
+      });
+    });
+  });
+  it("admits a queued scheduled child's agent turn only while its requester stays authorized", async () => {
+    guards.stubModelChoice = true;
+    await withCommandPlugin(async (fixture) => {
+      fixture.installAgentTurnFacade();
+      const id = await createContinuation(fixture);
+      const blockers: string[] = [];
+      // Hold swarm capacity so each child is still queued when its occurrence settles.
+      fixture.onExecutionStarted = (info) => {
+        const runId = expectDefined(info.runId, "scheduled occurrence run id");
+        const sessionKey = expectDefined(info.sessionKey, "scheduled occurrence parent");
+        const blocker = "capacity-" + runId;
+        blockers.push(blocker);
+        enqueueSwarmRun({
+          groupId: JSON.stringify(["main", sessionKey, "swarm:" + sessionKey + ":" + runId]),
+          runId: blocker,
+          maxConcurrent: 1,
+          activeRunIds: [],
+          start: async () => {},
+          onStartFailure: () => true,
+        });
+      };
+      const children: string[] = [];
+      fixture.handler.mockImplementation(async (ctx) => {
+        const native = expectDefined(ctx.runtimeContext?.subagents, "scheduled native runtime");
+        const child = await native.spawn({
+          requestId: "scheduled-queued-" + children.length,
+          task: "Synthetic scheduled child released after its occurrence settles",
+          context: "isolated",
+        });
+        children.push(child.runId);
+        return { text: "child queued" };
+      });
+      const releaseSettledOccurrence = async (index: number, demoteFirst: boolean) => {
+        try {
+          await fixture.cron.run(id, "force");
+          expect(fixture.scheduledResults[index]).toMatchObject({
+            status: "ok",
+            outputText: "child queued",
+          });
+          const runId = expectDefined(children[index], "queued child run");
+          expect(subagentRuns.get(runId)?.execution).toMatchObject({ status: "queued" });
+          if (demoteFirst) {
+            fixture.demoteOwner();
+          }
+        } finally {
+          for (const blocker of blockers.splice(0)) {
+            releaseSwarmRun(blocker);
+          }
+        }
+        const runId = expectDefined(children[index], "queued child run");
+        await vi.waitFor(() => expect(subagentRuns.get(runId)?.execution.status).toBe("terminal"), {
+          timeout: 15_000,
+        });
+        return subagentRuns.get(runId)?.execution.outcome;
+      };
+      // Authorized: after its occurrence settled, the child passed the real agent turn's
+      // admission revalidation. This harness publishes no reply runtime, so the turn stops at
+      // that next seam, still before the model runner (the fixture's no-embedded-run guard).
+      await expect(releaseSettledOccurrence(0, false)).resolves.toMatchObject({
+        status: "error",
+        error: "published reply runtime missing for main",
+      });
+      // Demoted while queued: the next child is refused at that admission, before any runner.
+      await expect(releaseSettledOccurrence(1, true)).resolves.toMatchObject({
+        status: "error",
+        error: "Queued channel operator authority changed; submit a new request.",
       });
     });
   });
