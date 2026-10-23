@@ -62,6 +62,7 @@ describe("google provider catalog", () => {
     expect(buildGoogleStaticCatalogProvider().models[0]).toEqual({
       id: "gemini-4-argon",
       name: "Gemini 4 Argon",
+      family: "google",
       ...geminiFields,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       thinkingLevelMap,
@@ -71,6 +72,7 @@ describe("google provider catalog", () => {
     ).toEqual({
       id: "gemini-3.8-flash",
       name: "Gemini 3.8 Flash",
+      family: "google",
       ...geminiFields,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       thinkingLevelMap,
