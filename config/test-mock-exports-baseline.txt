@@ -74,7 +74,6 @@
 ["extensions/browser/src/browser/client-fetch.unavailable.test.ts","openclaw/plugin-sdk/plugin-runtime","fe36fac5174c006ad9efaf2f61415a00c226ac0839c31a1e8c320fa55409ebb0",1]
 ["extensions/browser/src/browser/control-auth.auto-token.test.ts","openclaw/plugin-sdk/gateway-runtime","87abee91b5b6e9076171b0c649de362a4b76d879c74c134540a4de3a50adf77f",1]
 ["extensions/browser/src/browser/control-service.plugin-disabled.test.ts","./config.js","d4646579a7c6b01738377b2c52efba7a78d8d0eb75d2a5a7326662fc191e9f4e",1]
-["extensions/browser/src/browser/control-service.plugin-disabled.test.ts","./control-auth.js","8e6c6ebf35a1020660beaeb490f0eb6629dfa6380dfb6f7b2253c05ae9eccffd",1]
 ["extensions/browser/src/browser/control-service.plugin-disabled.test.ts","./runtime-lifecycle.js","1309261a33b11c7719bcc3ea0433413a4299a10bec75272a8af77e6ea64b9fd6",1]
 ["extensions/browser/src/browser/control-service.plugin-disabled.test.ts","./server-context.js","8683f27d790eb01f87a59df03ea7dd2921ba8ceae23594da3f41d5c6e7cff1e3",1]
 ["extensions/browser/src/browser/extension-relay/gateway-relay-route.integration.test.ts","openclaw/plugin-sdk/plugin-runtime","289cc41db0fd52c8f4acb4d581cb4ef89bd2ded9b34035a87da74fd8783d5490",1]
