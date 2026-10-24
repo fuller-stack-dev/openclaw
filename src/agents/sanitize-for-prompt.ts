@@ -45,14 +45,18 @@ type PromptDataBlockParams = {
   /**
    * `markup` (default) escapes every angle bracket. `verbatim` keeps the text's own
    * characters, tabs included, for results a reader may quote exactly; it escapes only
-   * a `<` that would start a data-block tag or an owned prompt-region marker.
+   * a `<` that would start a data-block tag, an owned prompt-region marker, or an
+   * OpenClaw `<<<DELIMITER>>>` such as the internal runtime-context markers.
    */
   encoding?: "markup" | "verbatim";
 };
 
-// Only these can end a data block early, open a forged one, or split an owned prompt region.
-const PROMPT_DATA_STRUCTURAL_MARKUP_RE =
-  /<(?=\s*\/?\s*(?:prompt-data|untrusted-text)|!--\s*\/?\s*openclaw:)/giu;
+// Only these can end a data block early, open a forged one, split an owned prompt region,
+// or close an enclosing runtime-context or untrusted-content block.
+const PROMPT_DATA_STRUCTURAL_MARKUP_RES = [
+  /<(?=\s*\/?\s*(?:prompt-data|untrusted-text)|!--\s*\/?\s*openclaw:)/giu,
+  /<(?=<<[A-Z])/gu,
+];
 const PROMPT_UNSAFE_EXCEPT_TAB_RE = /(?!\t)[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
 /** Encode per code point so a bound can never split a character or an escape. */
@@ -61,7 +65,9 @@ function encodePromptData(value: string, encoding: PromptDataBlockParams["encodi
     return Array.from(value, (char) => (char === "<" ? "&lt;" : char === ">" ? "&gt;" : char));
   }
   const structural = new Set(
-    Array.from(value.matchAll(PROMPT_DATA_STRUCTURAL_MARKUP_RE), (match) => match.index),
+    PROMPT_DATA_STRUCTURAL_MARKUP_RES.flatMap((pattern) =>
+      Array.from(value.matchAll(pattern), (match) => match.index),
+    ),
   );
   const units: string[] = [];
   let offset = 0;

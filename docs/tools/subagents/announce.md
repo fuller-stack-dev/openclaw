@@ -166,10 +166,11 @@ accepted reply; a correction with a newer end time can replace it.
 
 OpenClaw keeps each child result's own characters inside its prompt-data block, so
 a requester can quote it exactly: markup, entities, ampersands and tabs arrive as
-the child wrote them. Only a `<` that would open or close a data block (or an
-OpenClaw prompt-region marker) is escaped as `&lt;`. Task titles stay fully
-escaped. Several results keep a stable order, and completion findings have a
-strict shared 160,000-character cap, including escaping and framing. Small answers stay intact; larger answers keep
+the child wrote them. Only a `<` that would open or close a data block, an
+OpenClaw prompt-region marker or an OpenClaw `<<<…>>>` delimiter is escaped as
+`&lt;`. Task titles stay fully escaped. Several results keep a stable order, and
+completion findings have a strict shared 160,000-character cap, including
+escaping and framing. Small answers stay intact; larger answers keep
 their beginning and an explicit truncation marker pointing to `sessions_history`
 with the child session key. `sessions_history` truncates text fields to 4,000
 characters; this pointer does not provide lossless retrieval of an omitted tail.
