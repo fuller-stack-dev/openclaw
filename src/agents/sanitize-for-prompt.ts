@@ -55,7 +55,8 @@ type PromptDataBlockParams = {
 // or close an enclosing runtime-context or untrusted-content block.
 const PROMPT_DATA_STRUCTURAL_MARKUP_RES = [
   /<(?=\s*\/?\s*(?:prompt-data|untrusted-text)|!--\s*\/?\s*openclaw:)/giu,
-  /<(?=<<[A-Z])/gu,
+  // OpenClaw delimiters: an uppercase marker name, optional attributes, closed by >>>.
+  /<(?=<<[A-Z][A-Z0-9_]*(?:[ \t][^\n>]*)?>>>)/gu,
 ];
 const PROMPT_UNSAFE_EXCEPT_TAB_RE = /(?!\t)[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
