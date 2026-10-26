@@ -270,6 +270,33 @@ export function listUnsettledRequesterChildrenInRuns(params: {
   return children.toSorted((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
 }
 
+/**
+ * Whether a child spawned by this requester turn is still running, whether it
+ * announces its completion or is collected explicitly.
+ */
+export function hasRunningRequesterTurnChildInRuns(params: {
+  requesterTurnRunId: string;
+  runs: ReadonlyMap<string, SubagentRunRecord>;
+  now?: number;
+}): boolean {
+  const requesterTurnRunId = params.requesterTurnRunId.trim();
+  if (!requesterTurnRunId) {
+    return false;
+  }
+  const now = params.now ?? Date.now();
+  for (const entry of params.runs.values()) {
+    if (
+      entry.requesterTurnRunId === requesterTurnRunId &&
+      !entry.killIntent &&
+      !entry.killReconciliation &&
+      isRetainedUnendedSubagentRun(entry, now)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Completion children that a requester turn still claims. */
 export function selectRequesterTurnChildren(
   runs: ReadonlyMap<string, SubagentRunRecord>,

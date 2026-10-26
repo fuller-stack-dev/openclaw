@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ProgressCardPutResult } from "../../../../packages/gateway-protocol/src/index.js";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
+import { captureRuntimeConfigAsyncReader } from "../../../config/config.js";
 import type { Context, Model } from "../../../llm/types.js";
 import { createHookRunner } from "../../../plugins/hooks.js";
 import { createMockPluginRegistry } from "../../../plugins/hooks.test-helpers.js";
@@ -14,6 +15,10 @@ import {
   streamMocks,
   testModel,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
+import {
+  seedSubagentRunForReadTest,
+  resetSubagentRegistryForTests,
+} from "../../subagents/registry/subagent-registry.test-helpers.js";
 import { createStubTool } from "../../test-helpers/agent-tool-stubs.js";
 import * as gatewayTool from "../../tools/in-process-gateway.js";
 import { createProgressCardTool } from "../../tools/progress-card-tool.js";
@@ -231,6 +236,71 @@ it.each(["no pending plan", "consumed check", "optional status", "authored silen
     ).toHaveLength(0);
   },
 );
+
+it.each([
+  { child: "running collector", checks: 0 },
+  { child: "running announcer", checks: 0 },
+  { child: "finished collector", checks: 1 },
+  { child: "collector from another turn", checks: 1 },
+  { child: "killed collector", checks: 1 },
+])("keeps a handoff to a $child with $checks completion checks", async ({ child, checks }) => {
+  await captureRuntimeConfigAsyncReader()();
+  await resetSubagentRegistryForTests({ persist: false });
+  const now = Date.now();
+  // The run's own child, registered as sessions_spawn records it for this turn.
+  seedSubagentRunForReadTest({
+    runId: "child-run",
+    childSessionKey: "agent:main:subagent:child",
+    requesterSessionKey: "agent:main:main",
+    requesterDisplayKey: "agent:main:main",
+    requesterAgentId: "main",
+    requesterTurnRunId:
+      child === "collector from another turn" ? "run-earlier-turn" : "run-output-schema",
+    task: "Measure the remaining case",
+    cleanup: "keep",
+    createdAt: now,
+    collect: child !== "running announcer",
+    expectsCompletionMessage: child === "running announcer",
+    ...(child === "killed collector" ? { killIntent: { requestedAt: now, reason: "killed" } } : {}),
+    execution:
+      child === "finished collector"
+        ? { status: "terminal", startedAt: now, endedAt: now, outcome: { status: "ok" } }
+        : { status: "running", startedAt: now },
+  });
+  const completionCheck = { unfinishedPlan: false, checked: false };
+  const plan = [
+    { step: "Spawn the measurement", status: "completed" as const },
+    { step: "Report the measurement", status: "pending" as const },
+  ];
+  vi.spyOn(gatewayTool, "callInProcessGatewayTool").mockResolvedValue(cardWith(plan));
+  const progress = createProgressCardTool({
+    agentSessionKey: "agent:main:main",
+    onPlanSaved: (unfinished) => {
+      completionCheck.unfinishedPlan = unfinished;
+    },
+  });
+  const { session } = await createTestSession({ customTools: [progress] });
+  const prepared = prepare({ activeSession: session, attempt: { completionCheck } });
+  const handoff = "Handoff: measurement pending\nPending: child-run";
+  const requests = mockTurns(
+    [toolCall("save", "progress_card", { plan })],
+    handoff,
+    SILENT_REPLY_TOKEN,
+  );
+
+  await session.prompt("Measure the remaining case and report it.");
+  await prepared.subscription.waitForPendingEvents();
+
+  expect(requests()).toBe(2 + checks);
+  expect(completionCheck.checked).toBe(checks > 0);
+  expect(
+    session.messages.filter(
+      (message) =>
+        message.role === "custom" && message.customType === "openclaw.plan-completion-check",
+    ),
+  ).toHaveLength(checks);
+  await resetSubagentRegistryForTests({ persist: false });
+});
 
 it.each([
   { owner: "plugin finalize", checks: 0 },

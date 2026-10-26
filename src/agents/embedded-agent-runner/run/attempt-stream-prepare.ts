@@ -1,6 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { AgentMessage } from "../../../../packages/agent-core/src/types.js";
-import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { captureAgentRunLifecycleGeneration } from "../../../infra/agent-events.js";
 import {
   getAgentRunContext,
@@ -56,6 +55,10 @@ import {
   readAttemptNestedToolActivity,
   type AttemptNestedToolActivityState,
 } from "./attempt-nested-tool-activity.js";
+import {
+  createPlanCompletionCheckMessage,
+  deferPlanCheckToRunningChildren,
+} from "./attempt-plan-completion-check.js";
 import {
   claimEmbeddedPendingUserInputAnswer,
   steerActiveSessionWithOptionalDeliveryWait,
@@ -302,6 +305,9 @@ function prepareStream(
                 return { suppressTerminalDelivery: true };
               }
             }
+            if (await deferPlanCheckToRunningChildren(completionCheck, attempt.runId)) {
+              return;
+            }
             const currentState = input.getRunState();
             if (
               !completionCheck?.unfinishedPlan ||
@@ -325,14 +331,9 @@ function prepareStream(
             // This is a same-prompt follow-up, not a replay or draft rewind.
             // Retain every completed effect and consume the check across retries.
             completionCheck.checked = true;
-            await activeSession.sendCustomMessage(
-              {
-                customType: "openclaw.plan-completion-check",
-                display: false,
-                content: `This run’s latest successfully saved plan still has unfinished steps. Before ending, check whether those steps remain required and authorized under the latest user instructions. Continue feasible work from the current transcript; do not repeat completed actions, and reconcile uncertain effects before retrying. If work is complete, reconcile the plan. If user input, approval, an external dependency, or an explicit pause prevents further work, report that concrete limitation; if your previous reply already reported it, end with only ${SILENT_REPLY_TOKEN}. Do not invent completion or new authority.`,
-              },
-              { deliverAs: "followUp" },
-            );
+            await activeSession.sendCustomMessage(createPlanCompletionCheckMessage(), {
+              deliverAs: "followUp",
+            });
             return { continueCurrentTurn: true };
           } finally {
             if (!keepAdmissionClosed) {

@@ -19,7 +19,10 @@ import {
 } from "./subagent-registry-queries.js";
 import type { PreparedSubagentRunsRead } from "./subagent-registry-read-snapshot.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
-import { listUnsettledRequesterChildrenInRuns } from "./subagent-registry-requester-yield.js";
+import {
+  hasRunningRequesterTurnChildInRuns,
+  listUnsettledRequesterChildrenInRuns,
+} from "./subagent-registry-requester-yield.js";
 import { claimSubagentYieldInRuns } from "./subagent-registry-run-pause.js";
 import {
   countActiveSubagentRunsForSession,
@@ -297,6 +300,11 @@ export function createSubagentRegistryPublicApi(config: {
     return listUnsettledRequesterChildrenInRuns({ ...params, runs });
   }
 
+  async function hasRunningRequesterTurnChild(requesterTurnRunId: string) {
+    await restoreOnce();
+    return hasRunningRequesterTurnChildInRuns({ requesterTurnRunId, runs });
+  }
+
   return {
     claimSubagentYield: async (params: {
       runId: string;
@@ -332,5 +340,6 @@ export function createSubagentRegistryPublicApi(config: {
     settleRequesterAfterSessionSpawns: settleRequesterTurn,
     markRequesterTurnYielded,
     listUnsettledRequesterChildren,
+    hasRunningRequesterTurnChild,
   };
 }
