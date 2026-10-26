@@ -40,6 +40,7 @@ import { ChatPaneTaskSuggestions } from "./chat-pane-task-suggestions.ts";
 import { retirePullRequestRefreshes } from "./chat-pull-request-refresh.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
+import type { ChildFailureDismissal } from "./components/chat-child-attention.tsx";
 import {
   chatBranchId,
   chatPullRequestId,
@@ -332,6 +333,56 @@ export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
 
   protected retireDeferredSessionHydration(): void {
     this.deferredSessionHydration = null;
+  }
+
+  /**
+   * A parent's failed-child card acknowledges that child with the same Gateway
+   * read write as opening it, so the dismissal holds on every device.
+   */
+  protected readonly childFailureDismissal: ChildFailureDismissal = {
+    canDismiss: (row) => {
+      const state = this.state;
+      return Boolean(
+        state &&
+        row.sharingRole !== "viewer" &&
+        readSessionMethodAccess(this.context.gateway.snapshot, {
+          method: "sessions.patch",
+          params: {
+            key: row.key,
+            unread: false,
+            agentId: parseAgentSessionKey(row.key)?.agentId ?? resolveChatAgentId(state),
+          },
+          sessionScope: true,
+          session: row,
+        }).allowed,
+      );
+    },
+    dismiss: async (row) => {
+      const state = this.state;
+      const result = state
+        ? await this.context.sessions.patch(
+            row.key,
+            { unread: false },
+            {
+              agentId: parseAgentSessionKey(row.key)?.agentId ?? resolveChatAgentId(state),
+              expectedMarkedUnreadAt: row.markedUnreadAt ?? null,
+            },
+          )
+        : null;
+      // A retired connection or pane did not record the read.
+      if (result === null) {
+        throw new Error(t("chat.childAttention.dismissFailedUnknown"));
+      }
+    },
+  };
+
+  protected override projectChildRoster(
+    target: Parameters<ChatPaneTaskSuggestions["projectChildRoster"]>[0],
+  ) {
+    return {
+      ...super.projectChildRoster(target),
+      childFailureDismissal: target ? this.childFailureDismissal : undefined,
+    };
   }
 
   protected markSessionRead(row: GatewaySessionRow | undefined) {

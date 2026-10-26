@@ -394,6 +394,24 @@ openclaw-pending-session-create {
   overflow-wrap: anywhere;
 }
 
+.chat-child-attention--dismissible {
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+}
+
+.chat-child-attention .chat-error__dismiss {
+  margin: 0;
+}
+
+.chat-child-attention .chat-composer-neighbor-card__copy .chat-child-attention__dismiss-error {
+  color: color-mix(in srgb, var(--danger) 80%, var(--text));
+}
+
+.chat-child-attention__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
 .chat-composer-neighbor-card--info {
   border-color: color-mix(in srgb, var(--info) 16%, transparent);
 }

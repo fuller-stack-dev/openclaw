@@ -36,6 +36,7 @@ import {
   createChatAttachmentDropHandlers,
   stagedAttachmentBytes,
 } from "./components/chat-attachments.ts";
+import type { ChildFailureDismissal } from "./components/chat-child-attention.tsx";
 import { resolveChatCommentAnchor } from "./components/chat-comment-anchor.ts";
 import type { ChatComposerProps } from "./components/chat-composer-types.ts";
 import type { ChatDetailsProps } from "./components/chat-details-types.ts";
@@ -87,6 +88,8 @@ export type ChatProps = Omit<
   ChatTaskSuggestionTrayProps &
   ChatPlacementStartupNoticeProps & {
     onOpenSidebar?: (content: SidebarContent) => SidebarOpenResult;
+    /** Marks a failed child read from its parent's notice, as opening it would. */
+    childFailureDismissal?: ChildFailureDismissal;
     onConversationFrameRef?: (element: HTMLElement) => void | (() => void);
     onFooterElementRef?: (element: HTMLElement) => void | (() => void);
     onCompanionStageAttachment?: (attachment: ChatAttachment, sourceSessionKey: string) => boolean;

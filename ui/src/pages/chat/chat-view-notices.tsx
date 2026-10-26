@@ -20,7 +20,10 @@ import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
 import type { ChatProviderReviewOwner } from "./chat-provider-review-controller.tsx";
 import type { SubagentRoster, SubagentRowContext } from "./chat-spawned-subagent.ts";
 import { ChatGPTUsageLimit } from "./chatgpt-usage-limit.tsx";
-import { ChatChildAttention } from "./components/chat-child-attention.tsx";
+import {
+  ChatChildAttention,
+  type ChildFailureDismissal,
+} from "./components/chat-child-attention.tsx";
 import { ChatConversationMobile } from "./components/chat-conversation-presentation.ts";
 import { renderGuestWelcomeStatus } from "./components/chat-guest-welcome-status.tsx";
 import { ChatSendStatus } from "./components/chat-message-send-status-view.tsx";
@@ -60,6 +63,7 @@ type ChatComposerNoticesProps = ChatPlacementStartupNoticeProps &
     sessionKey?: string;
     presented?: boolean;
     onSessionSelect?: (key: string) => void;
+    childFailureDismissal?: ChildFailureDismissal;
     connected?: boolean;
     messages: readonly unknown[];
     providerPolicyNotice?: ProviderPolicyNotice | null;
@@ -319,6 +323,7 @@ export function renderChatComposerNotices(props: ChatComposerNoticesProps) {
           sessions={props.subagentSessions ?? []}
           onOpenSubagent={props.onOpenSubagent}
           onOpenSession={props.onSessionSelect}
+          failureDismissal={props.childFailureDismissal}
         />
       </Show>
       <Show when={props.readProviderReview?.()}>

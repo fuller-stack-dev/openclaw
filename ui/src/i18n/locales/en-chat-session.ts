@@ -664,6 +664,13 @@ const enChatSession = {
       dismissAllLabel: "Dismiss all interrupted and cancelled messages shown",
       untitledInput: "message without text",
     },
+    childAttention: {
+      dismiss: "Dismiss failure for {session}",
+      dismissAll: "Dismiss all",
+      dismissAllLabel: "Dismiss all failed child sessions shown",
+      dismissFailed: "Couldn't dismiss: {error}",
+      dismissFailedUnknown: "The session could not be marked as read.",
+    },
     sessionSuggestions: {
       attachmentsUnsupported: "Remove attachments before submitting a text suggestion.",
       sendNow: "Send {author}'s suggestion now",
