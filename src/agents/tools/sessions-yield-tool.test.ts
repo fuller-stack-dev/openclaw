@@ -163,6 +163,36 @@ describe("sessions_yield tool", () => {
     expect(onYield).not.toHaveBeenCalled();
   });
 
+  it("reports when waitFor was not applied because the turn yielded for its own children", async () => {
+    const { tool } = setup({ sessionId: "runner-session", claimYield: () => true });
+    const childWait = await tool.execute("child-wait", { waitFor: "message" });
+    expect(childWait.details).toEqual({
+      status: "yielded",
+      note: 'waitFor: "message" was not applied: this turn yielded for its own pending child completions, which resume this session. Omit waitFor when yielding for children.',
+    });
+    expect((await tool.execute("plain", {})).details).toEqual({ status: "yielded" });
+
+    const paused = setup({
+      sessionId: "runner-session",
+      claimYield: () => ({ messageWaitRegistered: true }),
+    });
+    expect((await paused.tool.execute("message-wait", { waitFor: "message" })).details).toEqual({
+      status: "yielded",
+    });
+    expect(paused.onYield).toHaveBeenCalledWith("Turn yielded.", undefined, true);
+  });
+
+  it("scopes waitFor to a subagent waiting for its requester's continuation", () => {
+    const { tool } = setup();
+    const waitFor = (tool.parameters as { properties: Record<string, { description?: string }> })
+      .properties.waitFor;
+    for (const text of [tool.description, waitFor?.description ?? ""]) {
+      expect(text).toContain("waits for its requester to send it a continuation");
+      expect(text).toMatch(/Omit (?:waitFor )?when yielding for your own children/);
+      expect(text).not.toContain("Unfinished subagents awaiting an incoming continuation");
+    }
+  });
+
   it("passes explicit message intent to its owner without treating private text as intent", async () => {
     const claimYield = vi.fn(() => true);
     const { onYield, tool } = setup({ sessionId: "child-session", claimYield });
