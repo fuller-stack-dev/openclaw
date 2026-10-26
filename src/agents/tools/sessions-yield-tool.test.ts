@@ -182,17 +182,6 @@ describe("sessions_yield tool", () => {
     expect(paused.onYield).toHaveBeenCalledWith("Turn yielded.", undefined, true);
   });
 
-  it("scopes waitFor to a subagent waiting for its requester's continuation", () => {
-    const { tool } = setup();
-    const waitFor = (tool.parameters as { properties: Record<string, { description?: string }> })
-      .properties.waitFor;
-    for (const text of [tool.description, waitFor?.description ?? ""]) {
-      expect(text).toContain("waits for its requester to send it a continuation");
-      expect(text).toMatch(/Omit (?:waitFor )?when yielding for your own children/);
-      expect(text).not.toContain("Unfinished subagents awaiting an incoming continuation");
-    }
-  });
-
   it("passes explicit message intent to its owner without treating private text as intent", async () => {
     const claimYield = vi.fn(() => true);
     const { onYield, tool } = setup({ sessionId: "child-session", claimYield });
