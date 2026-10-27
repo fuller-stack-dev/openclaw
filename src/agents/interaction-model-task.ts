@@ -18,6 +18,7 @@ import {
   completeWithPreparedSimpleCompletionModel,
   resolveSimpleCompletionSelectionForAgent,
 } from "./simple-completion-runtime.js";
+import { runWithAgentToolExecutionModel } from "./tool-execution-model.js";
 import { createToolPolicyMatcher } from "./tool-policy-match.js";
 import {
   buildPluginToolGroups,
@@ -107,10 +108,10 @@ export async function runInteractionModelTask(params: {
     throw new Error(prepared.error);
   }
   await using modelLease = prepared;
-  const executedModel = {
+  const executedModel = Object.freeze({
     provider: modelLease.selection.provider,
     model: modelLease.selection.modelId,
-  };
+  });
   selected = executedModel;
   assertCurrent();
   assertSelectedToolPolicy();
@@ -235,10 +236,8 @@ export async function runInteractionModelTask(params: {
       }
       const args = validateToolArguments(params.tool, call);
       // Keep the same guarded tool instance: its target, frames, tabs, hooks and approvals stay owned.
-      const result = await params.tool.execute(
-        params.toolCallId + ":" + step + ":" + toolCalls++,
-        args,
-        signal,
+      const result = await runWithAgentToolExecutionModel(executedModel, () =>
+        params.tool.execute(params.toolCallId + ":" + step + ":" + toolCalls++, args, signal),
       );
       assertCurrent();
       messages.push({

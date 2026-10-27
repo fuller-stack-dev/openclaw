@@ -15,6 +15,7 @@ import {
   completionModelDefinition,
   startCompletionServer,
 } from "./simple-completion.test-support.js";
+import { getAgentToolExecutionModel } from "./tool-execution-model.js";
 import type { AnyAgentTool } from "./tools/common.js";
 import { withGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
@@ -73,7 +74,11 @@ describe("interaction model selection", () => {
   });
 });
 
-function observationTool(name: InteractionToolName, calls: unknown[]): AnyAgentTool {
+function observationTool(
+  name: InteractionToolName,
+  calls: unknown[],
+  onExecute?: () => void,
+): AnyAgentTool {
   return {
     name,
     label: name,
@@ -82,6 +87,7 @@ function observationTool(name: InteractionToolName, calls: unknown[]): AnyAgentT
     parameters: Type.Object({ action: Type.Literal("screenshot") }),
     execute: async (_id, input) => {
       calls.push(input);
+      onExecute?.();
       return {
         content: [
           { type: "text", text: "Observation frame-1: expected synthetic app is visible." },
@@ -185,7 +191,10 @@ async function fixture(
       },
     },
   };
-  const original = observationTool(toolName, calls);
+  const observedModels: Array<ReturnType<typeof getAgentToolExecutionModel>> = [];
+  const original = observationTool(toolName, calls, () =>
+    observedModels.push(getAgentToolExecutionModel()),
+  );
   const tool = finalizeAgentTools({
     tools: [original],
     config,
@@ -198,6 +207,7 @@ async function fixture(
     config,
     tool,
     original,
+    observedModels,
     async [Symbol.asyncDispose]() {
       await server[Symbol.asyncDispose]();
       await rm(root, { recursive: true, force: true });
@@ -344,6 +354,9 @@ describe("delegated interaction at the real provider boundary", () => {
       expect(f.requests).toHaveLength(2);
       expect(f.requests.map((r) => r.model)).toEqual(["vision", "vision"]);
       expect(f.calls).toEqual([{ action: "screenshot" }]);
+      expect(f.observedModels).toEqual([{ provider: "interaction-fixture", model: "vision" }]);
+      expect(Object.isFrozen(f.observedModels[0])).toBe(true);
+      expect(getAgentToolExecutionModel()).toBeUndefined();
       expect(JSON.stringify(f.requests[1])).toContain("data:image/png;base64," + image);
       expect(result.content).toEqual([{ type: "text", text: "Verified the synthetic UI." }]);
       expect(result.details).toMatchObject({
