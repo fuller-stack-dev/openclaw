@@ -426,20 +426,26 @@ function mockDarwinBatch(lsof: { status: number | null; stdout: string; error?: 
   darwinCommand.mockImplementation((pid: number) => ({ argv: rows.get(pid)!.argv }));
 }
 
-it.each([peer, launcher, self])(
-  "continues after an incomplete Darwin environment for PID %s",
-  (incompletePid) => {
-    processRow(peer, ["/bin/sleep", "60"]);
+it.each([
+  { incompletePid: peer + 1, pids: [peer + 1] },
+  { incompletePid: launcher, pids: [launcher, peer + 1] },
+  { incompletePid: self, pids: [peer + 1] },
+])(
+  "keeps runtime custody unknown after an incomplete Darwin environment for PID $incompletePid",
+  ({ incompletePid, pids }) => {
     processRow(peer + 1, ["node", "/app/dist/index.js"]);
     mockDarwinBatch({ status: 0, stdout: "" });
-    darwinCommand.mockImplementation((pid: number) => {
-      if (pid === incompletePid) {
-        throw new ProcSafeError("incomplete", "unterminated Darwin environment: private fixture");
-      }
-      return { argv: rows.get(pid)!.argv };
-    });
+    darwinCommand.mockImplementation(
+      (pid: number, _owner: string, options?: { serviceMarker?: boolean }) => {
+        // Exact argv stays readable, but a runtime's service marker can identify OpenClaw.
+        if (pid === incompletePid && options?.serviceMarker !== false) {
+          throw new ProcSafeError("incomplete", "unterminated Darwin environment: private fixture");
+        }
+        return { argv: rows.get(pid)!.argv };
+      },
+    );
     expect(inspectOtherOpenClawProcesses()).toEqual({
-      pids: incompletePid === self ? [peer + 1] : [incompletePid, peer + 1],
+      pids,
       ...(incompletePid === self
         ? {}
         : {
@@ -450,6 +456,32 @@ it.each([peer, launcher, self])(
     });
   },
 );
+
+it("classifies other Darwin processes by exact argv when their environment is unbounded", () => {
+  const runtime = "/tmp/openclaw-update-runtime-Held01";
+  const commands = new Map([
+    [peer, { argv: ["/System/Library/PrivateFrameworks/WebPrivacy.framework/webprivacyd"] }],
+    [peer + 1, { argv: ["/bin/sleep", "60"] }],
+    [peer + 2, { argv: ["helper"], executable: `${runtime}/tree/bin/helper` }],
+  ]);
+  for (const [pid, { argv }] of commands) {
+    processRow(pid, argv);
+  }
+  mockDarwinBatch({
+    status: 0,
+    stdout: `p${peer}\0n/\0\np${peer + 1}\0fcwd\0n${runtime}/tree\0\np${peer + 2}\0n/\0\n`,
+  });
+  darwinCommand.mockImplementation(
+    (pid: number, _owner: string, options?: { serviceMarker?: boolean }) => {
+      if (commands.has(pid) && options?.serviceMarker !== false) {
+        throw new ProcSafeError("incomplete", "unterminated Darwin environment: private fixture");
+      }
+      return commands.get(pid) ?? { argv: rows.get(pid)!.argv };
+    },
+  );
+  // Only the processes whose cwd or image lies inside the runtime still hold it.
+  expectPids([peer + 1, peer + 2], undefined, runtime);
+});
 
 it("retains Darwin cwd holders from one partial batch without trusting other PID records", () => {
   processRow(peer, ["node", "/vendor/worker.js"]);

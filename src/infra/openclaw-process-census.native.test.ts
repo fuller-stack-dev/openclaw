@@ -95,6 +95,20 @@ it.runIf(native)("finds a real non-Node process holding retained handoff paths",
   expect(unrelated.matchingPids).not.toContain(holder);
 });
 
+it.runIf(native)("retains a runtime only for real processes working inside it", async () => {
+  const runtime = fs.realpathSync(dirs.make("openclaw-update-runtime-"));
+  const elsewhere = fs.realpathSync(dirs.make("runtime-census-elsewhere-"));
+  // macOS can end a platform binary's argument image without the envp separator;
+  // its exact argv and cwd still decide custody.
+  const holder = await startOrphan(runtime, "/bin/sleep 61", "exec /bin/sleep 61");
+  const unrelated = await startOrphan(elsewhere, "/bin/sleep 62", "exec /bin/sleep 62");
+  const census = inspectOtherOpenClawProcesses(runtime);
+  expect(census).not.toHaveProperty("error");
+  const pids = "pids" in census ? census.pids : [];
+  expect(pids).toContain(holder);
+  expect(pids).not.toContain(unrelated);
+});
+
 it.runIf(native)("does not report the inspector's own child processes", async () => {
   const retained = fs.realpathSync(dirs.make("handoff-census-self-"));
   // A shell keeps its sleep child, so this covers a grandchild as well.

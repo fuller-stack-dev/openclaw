@@ -301,6 +301,13 @@ export function parseProcCmdline(raw: string): string[] {
   return normalizeStringEntries(raw.split("\0"));
 }
 
+/** Only these runtimes carry a service marker that can identify an OpenClaw process. */
+export function isServiceMarkerRuntime(executable: string): boolean {
+  return (
+    isNodeRuntime(executable) || isBunRuntime(executable) || path.basename(executable) === "tsx"
+  );
+}
+
 /** One classification for process owners, command consumers, and diagnostics. */
 export function classifyOpenClawArgv(
   args: string[],
@@ -345,11 +352,7 @@ export function classifyOpenClawArgv(
     return identity.kind === "openclaw" ? identity : { kind: "openclaw" };
   }
   let marker = opts.serviceMarker;
-  if (
-    pid !== undefined &&
-    process.platform === "linux" &&
-    (isNodeRuntime(executable) || isBunRuntime(executable) || executable === "tsx")
-  ) {
+  if (pid !== undefined && process.platform === "linux" && isServiceMarkerRuntime(executable)) {
     try {
       marker = fs
         .readFileSync(`/proc/${pid}/environ`, "utf8")

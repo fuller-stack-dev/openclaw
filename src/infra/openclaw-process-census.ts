@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ProcSafeError } from "@openclaw/proc-safe/errors";
 import { readProcessAncestry } from "@openclaw/proc-safe/identity";
 import { isBunRuntime, resolveRuntimeScriptPosition } from "../daemon/runtime-binary.js";
 import { readDarwinProcessCommand } from "../process/supervisor/darwin-process-command.js";
@@ -16,6 +17,7 @@ import { isContainerEnvironment } from "./container-environment.js";
 import {
   classifyOpenClawArgv,
   classifyOpenClawEntrypointPath,
+  isServiceMarkerRuntime,
   readProcessPackageIdentity,
   readProcessWorkingDirectories,
   referencesRetainedArtifact,
@@ -63,6 +65,31 @@ function isStandardSystemdLoginProcess(
       parentCommand?.uid === command.uid &&
       isStandardSystemdUserManager(parentCommand))
   );
+}
+
+/** Some macOS argument images end without the separator that bounds envp. The
+ * service marker only identifies runtime processes, as on Linux, so every other
+ * process keeps its exact argv; an unreadable runtime marker stays unknown. */
+function readDarwinCensusCommand(
+  pid: number,
+  owner: "same" | "different" | "unknown",
+): ProcessCommand | undefined {
+  try {
+    return readDarwinProcessCommand(pid, owner);
+  } catch (error) {
+    if (!(error instanceof ProcSafeError) || error.code !== "incomplete") {
+      throw error;
+    }
+    const command = readDarwinProcessCommand(pid, owner, { serviceMarker: false });
+    if (
+      command &&
+      "argv" in command &&
+      [command.argv[0] ?? "", command.executable ?? ""].some(isServiceMarkerRuntime)
+    ) {
+      throw error;
+    }
+    return command;
+  }
 }
 
 type ArtifactCustody =
@@ -288,7 +315,7 @@ export function inspectOtherOpenClawProcesses(references?: HandoffReferences | s
         // so the service marker cannot change the outcome. Skip that environment read.
         readDarwinCommand: handoff
           ? (pid, owner) => readDarwinProcessCommand(pid, owner, { serviceMarker: false })
-          : readDarwinProcessCommand,
+          : readDarwinCensusCommand,
       }),
     ];
     const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
