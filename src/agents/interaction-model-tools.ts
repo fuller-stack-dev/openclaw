@@ -59,7 +59,6 @@ export function applyInteractionModelTools(params: {
       catalogMode: "direct-only",
       executionMode: "sequential",
       resultContentSource: tool.resultContentSource,
-      getExecutionTimeoutMs: () => 180_000,
       execute: (toolCallId, input, signal) => {
         const task = readToolStringParam(asToolParamsRecord(input) ?? {}, "task", {
           required: true,

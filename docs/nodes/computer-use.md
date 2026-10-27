@@ -51,9 +51,9 @@ By default, the active chat model drives the computer and browser tools. Configu
 
 Both fields accept a provider/model reference or a configured alias. They require an image-capable model route that supports tool calling. A missing agent value inherits the global setting; an empty string keeps that agent’s chat model in control. Neither setting changes the primary, utility, or subagent model.
 
-When configured, the corresponding tool accepts a complete `task` instead of atomic actions. The selected model runs a private, bounded interaction loop through the original tool instance, preserving the authorized desktop or browser connection, hooks, approvals, and cancellation. Screenshots and intermediate page state stay in the helper’s context; the parent receives its result and must assess the outcome. Task content and observations may be sent to the selected model provider.
+When configured, the corresponding tool accepts a complete `task` instead of atomic actions. The selected model runs a private interaction loop through the original tool instance, preserving the authorized desktop or browser connection, hooks, approvals, and cancellation. Screenshots and intermediate page state stay in the helper’s context; the parent receives its result and must assess the outcome. Task content and observations may be sent to the selected model provider.
 
-A task stops after three minutes, 24 model responses, or 64 tool calls. Cancellation and errors do not restart it on another model. Actions may already have happened: inspect the current state before continuing a failed or interrupted task.
+Interaction tasks use the source run’s normal deadline, cancellation, and tool-call budget; they do not impose a separate specialist timeout, model-response limit, or tool-call cap. Cancellation and errors do not restart a task on another model. Actions may already have happened: inspect the current state before continuing a failed or interrupted task.
 
 These settings route the OpenClaw `computer` and `browser` tools, not every possible way to automate a UI. Browser actions reached through `computer` use the Computer model. Web search/fetch, shell-driven automation, and a native harness’s own computer/browser tools are unchanged. Model selection grants no tools or OS permissions and does not bypass model policies.
 

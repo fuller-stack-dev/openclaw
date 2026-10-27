@@ -95,6 +95,8 @@ async function fixture(
   toolName: InteractionToolName,
   onRequest?: () => void,
   failAfterObservation = false,
+  observationResponses = 1,
+  callsPerResponse = 1,
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "interaction-model-"));
   const requests: Array<Record<string, unknown>> = [];
@@ -119,17 +121,19 @@ async function fixture(
         );
         return;
       }
-      const delta = seenObservation
+      const completedToolCalls = Array.isArray(body.messages)
+        ? body.messages.filter((message) => message.role === "tool").length
+        : 0;
+      const complete = completedToolCalls >= observationResponses * callsPerResponse;
+      const delta = complete
         ? { content: "Verified the synthetic UI." }
         : {
-            tool_calls: [
-              {
-                index: 0,
-                id: "observe-1",
-                type: "function",
-                function: { name: toolName, arguments: JSON.stringify({ action: "screenshot" }) },
-              },
-            ],
+            tool_calls: Array.from({ length: callsPerResponse }, (_, index) => ({
+              index,
+              id: "observe-" + requests.length + "-" + index,
+              type: "function",
+              function: { name: toolName, arguments: JSON.stringify({ action: "screenshot" }) },
+            })),
           };
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.end(
@@ -138,7 +142,7 @@ async function fixture(
             id: "fixture-response",
             object: "chat.completion.chunk",
             model: "vision",
-            choices: [{ index: 0, delta, finish_reason: seenObservation ? "stop" : "tool_calls" }],
+            choices: [{ index: 0, delta, finish_reason: complete ? "stop" : "tool_calls" }],
           }) +
           "\n\ndata: [DONE]\n\n",
       );
@@ -245,6 +249,29 @@ describe("delegated interaction at the real provider boundary", () => {
     expect(f.requests).toHaveLength(1);
     expect(f.calls).toHaveLength(0);
   });
+
+  it.each([
+    { observationResponses: 25, callsPerResponse: 1 },
+    { observationResponses: 2, callsPerResponse: 33 },
+  ])(
+    "continues beyond specialist-only caps ($observationResponses responses, $callsPerResponse calls per response)",
+    async ({ observationResponses, callsPerResponse }) => {
+      await using f = await fixture(
+        "computer",
+        undefined,
+        false,
+        observationResponses,
+        callsPerResponse,
+      );
+      const result = await f.tool.execute("long-task", {
+        task: "Observe each requested state, then report.",
+      });
+      expect(f.requests).toHaveLength(observationResponses + 1);
+      expect(f.calls).toHaveLength(observationResponses * callsPerResponse);
+      expect(result.details).toMatchObject({ toolCalls: observationResponses * callsPerResponse });
+      expect(f.tool.getExecutionTimeoutMs?.({ task: "Observe." })).toBeUndefined();
+    },
+  );
 
   it("serializes complete tasks rather than interleaving their action loops", async () => {
     await using f = await fixture("browser");
