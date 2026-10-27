@@ -73,7 +73,9 @@ async function policyFixture(name: "computer" | "browser", beforeResponse?: () =
           }) +
           "\n\ndata: [DONE]\n\n",
       );
-    })().catch((error) => response.destroy(error));
+    })().catch((error: unknown) =>
+      response.destroy(error instanceof Error ? error : new Error(String(error))),
+    );
   });
   const config: OpenClawConfig = {
     agents: {
@@ -240,8 +242,8 @@ describe("interaction task deployment-policy and authority boundaries", () => {
   });
 
   it("rejects a source run retired during real asynchronous provider transport before I/O", async () => {
-    const arrived = createDeferred<void>();
-    const release = createDeferred<void>();
+    const arrived = createDeferred();
+    const release = createDeferred();
     await using f = await policyFixture("computer", async () => {
       arrived.resolve();
       await release.promise;
