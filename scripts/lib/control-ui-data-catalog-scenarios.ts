@@ -823,18 +823,94 @@ export const dataCatalogScenarios: readonly InteractionScenario[] = [
     ...fixture,
     id: "data-agent-skills-filter",
     route: pathForAgentPanel("main", "skills"),
-    expected: "Filtering 1,000 skills retains only Data skill 0999.",
+    expected: "Filtering 1,000 skills shows only Data skill 0999.",
     rowSelector: ".agent-skill-row",
     prepare: async (page) => countRows(page, ".agent-skill-row", inventorySize),
     run: async (page) => {
       await page.locator('input[name="agent-skills-filter"]').pressSequentially(skillQuery);
-      await countRows(page, ".agent-skill-row", 1);
+      await countRows(page, ".agent-skill-row:not([hidden])", 1);
       await page
         .locator(".agent-skill-row .settings-row__title")
         .getByText(skillQuery, { exact: true })
         .waitFor();
       await frames(page);
       return { fixtureSkills: inventorySize, matchingSkills: 1 };
+    },
+  },
+  {
+    ...fixture,
+    id: "data-agent-skills-clear",
+    route: pathForAgentPanel("main", "skills"),
+    expected: "Clearing the Skills filter restores all 1,000 skills.",
+    rowSelector: ".agent-skill-row",
+    prepare: async (page) => {
+      await countRows(page, ".agent-skill-row", inventorySize);
+      await page.locator('input[name="agent-skills-filter"]').fill(skillQuery);
+      await countRows(page, ".agent-skill-row:not([hidden])", 1);
+    },
+    run: async (page) => {
+      await page.locator('input[name="agent-skills-filter"]').fill("");
+      await countRows(page, ".agent-skill-row:not([hidden])", inventorySize);
+      await frames(page);
+      return { fixtureSkills: inventorySize, matchingSkills: inventorySize };
+    },
+  },
+  {
+    ...fixture,
+    id: "data-agent-skills-scope-filtered",
+    route: pathForAgentPanel("main", "skills"),
+    expected: "Selecting another agent preserves the filter and shows its matching skill.",
+    rowSelector: ".agent-skill-row",
+    createRequestHandlers: agentSelectionScenario(0).createRequestHandlers,
+    prepare: async (page) => {
+      await countRows(page, ".agent-skill-row", inventorySize);
+      await page.locator('input[name="agent-skills-filter"]').fill(skillQuery);
+      await countRows(page, ".agent-skill-row:not([hidden])", 1);
+      await page.locator(".settings-sidebar__agent .agent-select__trigger").click();
+      await countRows(page, "[data-agent-option]", agentCount);
+      await countRows(
+        page,
+        '[data-agent-option] .identity-avatar__text[data-avatar="🧪"]',
+        agentCount,
+      );
+      await frames(page);
+    },
+    run: async (page, gateway) => {
+      const params = { agentId: "data-agent-0299" };
+      const before = (await gateway.getRequests("skills.status", params, { exactParams: true }))
+        .length;
+      await page.locator('[data-agent-option][value="data-agent-0299"]').click();
+      await gateway.waitForRequest("skills.status", {
+        after: before,
+        match: params,
+        exactParams: true,
+      });
+      await page.waitForFunction(
+        (query) =>
+          document.querySelector<HTMLInputElement>('input[name="agent-skills-filter"]')?.value ===
+            query &&
+          document
+            .querySelector(".settings-sidebar__agent .agent-select__trigger")
+            ?.textContent?.includes("Data agent 0299"),
+        skillQuery,
+      );
+      await countRows(page, ".agent-skill-row:not([hidden])", 1);
+      await page
+        .locator(".agent-skill-row:not([hidden]) .settings-row__title")
+        .getByText(skillQuery, { exact: true })
+        .waitFor();
+      await frames(page);
+      const skillStatusRequests =
+        (await gateway.getRequests("skills.status", params, { exactParams: true })).length - before;
+      if (skillStatusRequests !== 1) {
+        throw new Error("The new Skills scope did not settle exactly one report request");
+      }
+      return {
+        fixtureSkills: inventorySize,
+        matchingSkills: 1,
+        selectedAgentMatches: true,
+        skillStatusRequests,
+      };
     },
   },
   skillsRefreshScenario(0),
