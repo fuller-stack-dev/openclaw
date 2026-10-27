@@ -79,7 +79,7 @@ describe("Models page catalog publication", () => {
   it("requests capability details so image-capable specialists can actually be selected", async () => {
     const h = createHarness("main");
     const original = h.request.getMockImplementation()!;
-    h.request.mockImplementation((method: string, params?: { includeDetails?: boolean }) =>
+    h.request.mockImplementation(async (method: string, params?: { includeDetails?: boolean }) =>
       method === "models.list"
         ? {
             models: [
@@ -92,7 +92,7 @@ describe("Models page catalog publication", () => {
               },
             ],
           }
-        : original(method, params),
+        : original(method),
     );
     const page = appendPage(h.context);
     await waitForProviders(page);

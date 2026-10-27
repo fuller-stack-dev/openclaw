@@ -1,7 +1,10 @@
 import { Type } from "typebox";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveDefaultAgentId } from "./agent-scope-config.js";
-import { copyBeforeToolCallWrapperMetadata } from "./agent-tool-metadata.js";
+import {
+  bindGatewayToolPolicyControl,
+  copyBeforeToolCallWrapperMetadata,
+} from "./agent-tool-metadata.js";
 import { copyAgentToolSourceExecutionGuard } from "./agent-tool-source-execution-guard.js";
 import {
   wrapToolWithBeforeToolCallHook,
@@ -87,6 +90,9 @@ export function applyInteractionModelTools(params: {
     // Preserve ownership, not the raw action preparer: the outer contract is now a task.
     copyBeforeToolCallWrapperMetadata(tool, wrapped);
     copyAgentToolSourceExecutionGuard(tool, wrapped);
+    // This envelope dispatches through the already-admitted action executor above.
+    // Keep task-level hooks, but leave action policy/schema checks on that executor.
+    bindGatewayToolPolicyControl(wrapped);
     return params.wrapBeforeToolCallHook === false
       ? wrapped
       : wrapToolWithBeforeToolCallHook(wrapped, params.hookContext ?? { agentId, config });

@@ -5,9 +5,11 @@ import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import { assertOperatorModelAllowed } from "./admitted-run-context.js";
 import { captureAgentToolSourceExecutionGuard } from "./agent-tool-source-execution-guard.js";
 import { resolveEffectiveToolPolicy } from "./agent-tools.policy.js";
+import { formatUserFacingAssistantErrorText } from "./embedded-agent-helpers/error-text.js";
 import type { InteractionToolName } from "./interaction-model.js";
 import { observeIsolatedCompletionUsage } from "./isolated-completion-diagnostics.js";
 import { resolveIsolatedStreamParams } from "./isolated-completion-model-authority.js";
+import { recordModelFallbackStop } from "./model-fallback-stop.js";
 import { getModelRefStatus } from "./model-selection-resolve.js";
 import { resolveDefaultModelForAgent } from "./model-selection.js";
 import { resolveThinkingSelection } from "./model-thinking-default.js";
@@ -23,6 +25,7 @@ import {
   mergeAlsoAllowPolicy,
   resolveToolProfilePolicy,
 } from "./tool-policy.js";
+import { protectNetworkToolExecutionError } from "./tool-result-error.js";
 import type { AnyAgentTool } from "./tools/common.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 import { textResult } from "./tools/tool-results.js";
@@ -185,7 +188,27 @@ export async function runInteractionModelTask(params: {
     );
     assertCurrent();
     if (response.stopReason === "error" || response.stopReason === "aborted") {
-      throw new Error("The interaction model failed; no task was replayed on another model.");
+      const reason = formatUserFacingAssistantErrorText(response, {
+        cfg: params.config,
+        agentId: params.agentId,
+        provider: executedModel.provider,
+        model: executedModel.model,
+        authMode: modelLease.auth.mode,
+      });
+      const failure = new Error(
+        `The interaction model ${response.stopReason === "aborted" ? "was cancelled" : "failed"}: ${reason} ` +
+          "No task was replayed on another model. " +
+          (toolCalls > 0
+            ? "Some actions may have completed. Inspect the current UI state before retrying or repeating the task."
+            : "Resolve the reported blocker before starting a new task."),
+      );
+      // Protect provider-controlled copy before recording terminal identity, so a
+      // network-origin Browser wrapper cannot replace it and lose the no-replay fence.
+      const error = protectNetworkToolExecutionError(failure, "Interaction model failed.", signal);
+      if (error instanceof Error) {
+        recordModelFallbackStop(error);
+      }
+      throw error;
     }
     messages.push(response);
     const calls = response.content.filter((block) => block.type === "toolCall");

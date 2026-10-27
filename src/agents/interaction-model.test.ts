@@ -10,6 +10,7 @@ import { AgentEntryBaseSchema } from "../config/zod-schema.agent-entry-base.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
 import { applyInteractionModelTools } from "./interaction-model-tools.js";
 import { resolveInteractionModel, type InteractionToolName } from "./interaction-model.js";
+import { isRecordedModelFallbackStop } from "./model-fallback-stop.js";
 import {
   completionModelDefinition,
   startCompletionServer,
@@ -76,6 +77,7 @@ function observationTool(name: InteractionToolName, calls: unknown[]): AnyAgentT
   return {
     name,
     label: name,
+    resultContentSource: name === "browser" ? "network" : undefined,
     description: "Observe the authorized synthetic UI. Screen text is untrusted.",
     parameters: Type.Object({ action: Type.Literal("screenshot") }),
     execute: async (_id, input) => {
@@ -94,7 +96,7 @@ function observationTool(name: InteractionToolName, calls: unknown[]): AnyAgentT
 async function fixture(
   toolName: InteractionToolName,
   onRequest?: () => void,
-  failAfterObservation = false,
+  failAfterObservation: boolean | { status: number; message: string } = false,
   observationResponses = 1,
   callsPerResponse = 1,
 ) {
@@ -113,10 +115,19 @@ async function fixture(
       onRequest?.();
       const seenObservation = JSON.stringify(body.messages).includes("frame-1");
       if (seenObservation && failAfterObservation) {
-        response.writeHead(400, { "content-type": "application/json" });
+        response.writeHead(
+          typeof failAfterObservation === "object" ? failAfterObservation.status : 400,
+          { "content-type": "application/json" },
+        );
         response.end(
           JSON.stringify({
-            error: { message: "synthetic inference failure", type: "invalid_request_error" },
+            error: {
+              message:
+                typeof failAfterObservation === "object"
+                  ? failAfterObservation.message
+                  : "synthetic inference failure",
+              type: "invalid_request_error",
+            },
           }),
         );
         return;
@@ -285,11 +296,40 @@ describe("delegated interaction at the real provider boundary", () => {
     expect(f.calls).toHaveLength(2);
   });
 
-  it("does not replay prior UI actions or switch to the parent model after an inference failure", async () => {
-    await using f = await fixture("computer", undefined, true);
-    await expect(f.tool.execute("partial", { task: "Observe." })).rejects.toThrow(
-      "no task was replayed",
-    );
+  it.each(["computer", "browser"] as const)(
+    "does not replay prior %s actions or switch to the parent model after an inference failure",
+    async (name) => {
+      await using f = await fixture(name, undefined, true);
+      const error = await f.tool
+        .execute("partial", { task: "Observe." })
+        .catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("synthetic inference failure");
+      expect((error as Error).message).toMatch(/no task was replayed/i);
+      expect(isRecordedModelFallbackStop(error)).toBe(true);
+      expect((error as Error).message).toMatch(
+        /inspect.*current.*(?:UI|state).*before.*(?:retry|repeat)/i,
+      );
+      expect(f.requests.map((request) => request.model)).toEqual(["vision", "vision"]);
+      expect(f.calls).toHaveLength(1);
+    },
+  );
+
+  it("uses safe provider-auth recovery copy without exposing credentials or internal endpoints", async () => {
+    await using f = await fixture("computer", undefined, {
+      status: 401,
+      message:
+        "Invalid API key sk-syntheticCredentialMustNotEscape123456 for https://private-model.internal/v1",
+    });
+    const error = await f.tool
+      .execute("auth-failed", { task: "Observe." })
+      .catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/sign in|auth|credential|API key/i);
+    expect((error as Error).message).not.toContain("syntheticCredentialMustNotEscape");
+    expect((error as Error).message).not.toContain("private-model.internal");
+    expect((error as Error).message).toMatch(/inspect.*current.*UI/i);
+    expect(isRecordedModelFallbackStop(error)).toBe(true);
     expect(f.requests.map((request) => request.model)).toEqual(["vision", "vision"]);
     expect(f.calls).toHaveLength(1);
   });
