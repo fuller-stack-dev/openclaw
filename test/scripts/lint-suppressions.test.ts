@@ -255,6 +255,8 @@ describe("production lint suppressions", () => {
         "src/agents/prepared-model-runtime.synthetic-auth.ts|unicorn/no-array-sort|1",
         "src/agents/session-dirs.ts|unicorn/no-array-sort|1",
         "src/agents/tool-schema-hints.ts|unicorn/no-array-sort|1",
+        // Media list snapshots must honor the JSON serialization contract; structuredClone cannot materialize plugin-bound proxies.
+        "src/agents/tools/media-generate-tool-actions-shared.ts|unicorn/prefer-structured-clone|1",
         // Board private helpers only sort cloned layouts or freshly filtered arrays.
         "src/boards/board-layout.ts|unicorn/no-array-sort|1",
         "src/channels/plugins/channel-runtime-surface.types.ts|typescript/no-unnecessary-type-parameters|1",
