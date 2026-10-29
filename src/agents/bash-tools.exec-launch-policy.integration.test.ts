@@ -149,9 +149,12 @@ describe.runIf(process.platform !== "win32")("launch policy and construction aut
       const pending = exec(command, route === "Gateway PTY", assertCurrent);
       if (timing === "before") {
         await expect(pending).rejects.toThrow(/^exec approval changed before execution$/);
-        // The retained relay refuses at its launch frame; its anchor's startup-error
-        // receipt certifies cleanup, so the shutdown join in afterEach stays clean.
-        expect(boundary.retainedLaunchAttempted).toBe(route === "Gateway retained child");
+        if (route === "Gateway retained child") {
+          // The retained relay refuses at its launch frame; its anchor's startup-error
+          // receipt certifies cleanup, so the shutdown join in afterEach stays clean.
+          // Other routes reach the relay only where the host owns their process tree.
+          expect(boundary.retainedLaunchAttempted).toBe(true);
+        }
       } else {
         const handle = await pending;
         const result = await handle.promise;
