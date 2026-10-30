@@ -388,6 +388,9 @@ export async function preflightUpdateCommandSchemas(params: {
                 ? undefined
                 : packageTargetSchemaVersions,
             };
+      if ("localReplayNote" in target && target.localReplayNote) {
+        preflightNotes.push(target.localReplayNote);
+      }
       if ("metadataUnreadable" in target && target.metadataUnreadable) {
         preflightNotes.push(
           "Node compatibility was not checked because the Git target metadata is unavailable.",

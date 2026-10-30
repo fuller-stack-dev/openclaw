@@ -84,6 +84,18 @@ is named only after recorded recovery verifies it. Maintenance refusals
 remove the known database path before public diagnostic projection so recorded
 holder details survive redaction and truncation. Claim formats are unchanged.
 
+Dev-channel Git updates replay local `main` onto the upstream target only when Git
+can see shared history and at most 1000 commits to replay. A shallow boundary can
+hide a real ancestor, so a `main` with no local merge base, or with more commits than
+that, is not rebased. The replay has a 10-minute deadline even without `--timeout`,
+and a shorter `--timeout` lowers it. If replay is skipped, expires, or the walk back
+through older candidates ends after a conflict, the update validates the upstream
+commits without local `main` and reports a warning. Activation first preserves any commits the selected candidate does
+not contain at `refs/openclaw/update-preserved/main-<sha>`. If that ref cannot be
+written, `main` stays where it is and the update activates on a detached HEAD. An
+interrupted replay does not fall back. The installed updater must contain this
+behavior; a newer candidate cannot change the preflight of the updater running it.
+
 If an agent database's state lock was removed or replaced, shutdown still releases
 its native worker and records the lost lock and current holder in a warning.
 It leaves the replacement lock and unowned lease records alone for recovery;

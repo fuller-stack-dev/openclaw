@@ -38,6 +38,7 @@ import {
   normalizeFallbackFailureReason,
   reportUpdateStepCompletion,
 } from "../../infra/update-runner-command.js";
+import { readLocalReplayObstacle } from "../../infra/update-runner-git-local-replay.js";
 import { readGitTargetSchemaVersions } from "../../infra/update-runner-git-schema.js";
 import { readBranchName, selectChannelTag } from "../../infra/update-runner-git-target.js";
 import { updateGitCheckout } from "../../infra/update-runner-git.js";
@@ -296,6 +297,7 @@ export async function inspectGitDryRunTargetSchemaVersions(params: {
   nodeEngine?: string | null;
   metadataUnreadable?: string;
   failureCode?: "target-git-cache-stale";
+  localReplayNote?: string;
 }> {
   const { runCommand: runUpdateCommand } = await buildUpdateCommandRunner();
   const runCommand: UpdateRunnerCommandRunner = (argv, options) =>
@@ -348,13 +350,45 @@ export async function inspectGitDryRunTargetSchemaVersions(params: {
     timeoutMs: params.timeoutMs,
   });
   return target.status === "ok"
-    ? { schemaVersions: target.schemaVersions, nodeEngine: target.nodeEngine }
+    ? {
+        schemaVersions: target.schemaVersions,
+        nodeEngine: target.nodeEngine,
+        ...(params.channel === "dev" && !params.devTarget
+          ? {
+              localReplayNote: await inspectGitDryRunLocalReplay({
+                ...params,
+                runCommand,
+                revision,
+              }),
+            }
+          : {}),
+      }
     : {
         metadataUnreadable: target.reason,
         ...(target.reason.startsWith("git show ")
           ? { failureCode: "target-git-cache-stale" as const }
           : {}),
       };
+}
+
+async function inspectGitDryRunLocalReplay(params: {
+  root: string;
+  revision: string;
+  runCommand: UpdateRunnerCommandRunner;
+  timeoutMs: number;
+}): Promise<string | undefined> {
+  const ref = `refs/heads/${DEV_BRANCH}`;
+  const branch = await params.runCommand(
+    ["git", "-C", params.root, "rev-parse", "--verify", "--quiet", ref],
+    { cwd: params.root, timeoutMs: params.timeoutMs },
+  );
+  const obstacle =
+    branch.code === 0
+      ? await readLocalReplayObstacle({ ...params, gitRoot: params.root }, ref, params.revision)
+      : undefined;
+  return obstacle
+    ? `Would not replay local ${DEV_BRANCH} onto this update: ${obstacle}. The update would validate the upstream commit and keep commits it leaves out under refs/openclaw/update-preserved/.`
+    : undefined;
 }
 
 export async function updateGitInstall(params: {

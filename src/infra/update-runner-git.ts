@@ -16,6 +16,7 @@ import { isFailedUpdateStep } from "./update-run-step.js";
 import { reportUpdateStepCompletion, runStep } from "./update-runner-command.js";
 import { settleGitUpdateCleanup } from "./update-runner-git-cleanup.js";
 import { gitCleanCheckArgs } from "./update-runner-git-commands.js";
+import { resolveGitActivationCheckout } from "./update-runner-git-local-replay.js";
 import {
   readCurrentGitUpdateRecovery,
   recordGitRollbackOutcome,
@@ -515,9 +516,7 @@ export async function updateGitCheckout(params: {
     const checkout = await runStep(
       workStep(
         "git-checkout",
-        activateBranch
-          ? ["git", "-C", gitRoot, "checkout", "-B", DEV_BRANCH, preflight.candidateSha]
-          : ["git", "-C", gitRoot, "checkout", "--detach", preflight.candidateSha],
+        await resolveGitActivationCheckout({ ...preflight, gitRoot, activateBranch, step }),
         gitRoot,
       ),
     );

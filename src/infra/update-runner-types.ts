@@ -58,7 +58,7 @@ export type UpdateRunnerOptions = {
   /** Accepted candidate checks join the update's step results. */
   validateCandidate: (root: string) => Promise<readonly UpdateStepResult[] | void>;
   beforeGitMutation: (target: GitUpdateTarget) => Promise<void>;
-  /** Operator-selected work deadline; omission leaves work unbounded, not probes or cleanup. */
+  /** Operator-selected work deadline; omission leaves required work unbounded, not probes, optional local replay, or cleanup. */
   timeoutMs?: number;
   progress?: UpdateStepProgress;
   /** Retain source/runtime before Doctor; the finalizer owns state-safe rollback. */

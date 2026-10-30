@@ -118,6 +118,45 @@ it("recovers an incomplete remote advertisement without changing cached refs", a
   expect(git(checkout, "show-ref")).toBe(refsBefore);
 });
 
+it("warns about a disconnected local main without changing the checkout", async () => {
+  const { checkout, source } = createGitFixture(tempDirs.make("update-git-dry-run-replay-"));
+  vi.spyOn(databaseContexts, "inspectUpdateDatabaseContexts").mockResolvedValue({
+    service: undefined,
+    services: new Map(),
+    managedEnv: undefined,
+    contexts: [],
+  });
+  const previewNotes = async () =>
+    (
+      await preflightUpdateCommandSchemas({
+        root: checkout,
+        updateInstallKind: "git",
+        switchToGit: false,
+        shouldRestart: false,
+        updateStepTimeoutMs: 5000,
+        managedServiceRootRedirect: null,
+        channel: "dev",
+        opts: { dryRun: true, json: true },
+        refuseUpdate: async () => {
+          throw new Error("preview attempted mutation");
+        },
+      })
+    )?.preflightNotes.join("\n");
+  expect(await previewNotes()).not.toContain("Would not replay local main");
+
+  commitFile(source, "deployed.txt", "deployed\n");
+  git(source, "push", "origin", "main");
+  git(checkout, "fetch", "--depth=1", "origin", "main");
+  git(checkout, "checkout", "--detach", "origin/main");
+  const refs = git(checkout, "show-ref");
+
+  const notes = await previewNotes();
+
+  expect(notes).toContain("Would not replay local main");
+  expect(notes).toContain("refs/openclaw/update-preserved/");
+  expect(git(checkout, "show-ref")).toBe(refs);
+});
+
 it("explains when a dry-run cannot hydrate a promised target manifest", async () => {
   const { checkout } = createGitFixture(tempDirs.make("update-git-dry-run-partial-"), {
     partial: true,

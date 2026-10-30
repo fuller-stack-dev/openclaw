@@ -36,6 +36,12 @@ import {
   shouldInstallWithoutScriptsOnWindows,
   shouldRunDevPreflightLint,
 } from "./update-runner-git-commands.js";
+import {
+  readLocalReplayObstacle,
+  replayLocalCommits,
+  reportLocalReplayWarning,
+  type LocalReplayFailure,
+} from "./update-runner-git-local-replay.js";
 import { prepareGitCandidateNodeRuntime } from "./update-runner-git-node-preflight.js";
 import { readGitTargetSchemaVersions } from "./update-runner-git-schema.js";
 import { runClassifiedGitStep, runGitCleanCheckStep } from "./update-runner-git-steps.js";
@@ -51,6 +57,8 @@ type GitCandidatePreflightResult =
       candidateSha: string;
       selectedDevUpstream: string | null;
       localDevBranchExists: boolean | null;
+      /** The local commit whose changes the candidate carries, when a replay succeeded. */
+      replayedLocalSha: string | null;
     }
   | { status: "error" | "skipped"; reason: NonNullable<UpdateRunResult["reason"]> };
 
@@ -127,6 +135,7 @@ async function resolveExplicitTarget(params: {
 
 type PreflightCandidateResult =
   | { status: "ok"; candidateSha: string }
+  | LocalReplayFailure
   | { status: "manager-unavailable"; reason: string }
   | { status: "failed" | "insufficient-space" | "node-runtime-incompatible" };
 
@@ -164,32 +173,14 @@ async function testPreflightCandidate(
     return { status: classifyPreflightFailure(checkout) };
   }
   if (params.rebaseFrom) {
-    const source = await runCandidateCheck("local-checkout", [
-      "git",
-      "-C",
-      params.worktreeDir,
-      "checkout",
-      "--detach",
-      params.rebaseFrom,
-    ]);
-    const rebase =
-      source ??
-      (await runCandidateCheck("rebase", [
-        "git",
-        "-C",
-        params.worktreeDir,
-        "rebase",
-        ...(params.referenceSource ? ["--rebase-merges"] : []),
-        params.sha,
-      ]));
-    if (rebase) {
-      await runCandidateCheck(
-        "rebase-abort",
-        ["git", "-C", params.worktreeDir, "rebase", "--abort"],
-        undefined,
-        params.step,
-      );
-      return { status: classifyPreflightFailure(rebase) };
+    const failure = await replayLocalCommits({
+      ...params,
+      source: params.rebaseFrom,
+      target: params.sha,
+      runCheck: runCandidateCheck,
+    });
+    if (failure) {
+      return failure;
     }
   }
   const candidateHead = await params.runCommand(
@@ -446,6 +437,7 @@ export async function runGitCandidatePreflight(params: {
   let candidates: string[];
   let selectedDevUpstream: string | null = null;
   let localDevBranchExists: boolean | null = null;
+  let localDevBranchSha: string | undefined;
   if (params.targetRevision) {
     const result = await params.runCommand(
       ["git", "-C", params.gitRoot, "rev-parse", `${params.targetRevision}^{commit}`],
@@ -484,6 +476,7 @@ export async function runGitCandidatePreflight(params: {
         step("git-show-branch", "show-ref", "--verify", `refs/heads/${DEV_BRANCH}`),
       );
       localDevBranchExists = localMainStep.exitCode === 0;
+      localDevBranchSha = localMainStep.stdoutTail?.trim().split(" ")[0];
     }
     const readGit = async (...args: string[]) => {
       const result = await runStep(step("upstream-check", ...args));
@@ -519,13 +512,13 @@ export async function runGitCandidatePreflight(params: {
   // Source identity alone cannot prove the installed build is complete.
   const canSkipActivation =
     !params.referenceSource && !params.prepareGitExposure && params.beforeRuntimeVerified;
-  const rebaseFrom = params.referenceSource
+  let rebaseFrom = params.referenceSource
     ? params.referenceSource.branch === DEV_BRANCH
       ? undefined
       : (params.beforeSha ?? undefined)
     : !params.targetRevision && !params.devTarget && localDevBranchExists !== false
       ? params.needsCheckoutMain
-        ? DEV_BRANCH
+        ? localDevBranchSha
         : (params.beforeSha ?? undefined)
       : undefined;
 
@@ -613,10 +606,37 @@ export async function runGitCandidatePreflight(params: {
             : "preflight-worktree-failed",
       };
     }
-    for (const sha of candidates) {
-      if (canSkipActivation && sha === params.beforeSha) {
-        return { status: "skipped", reason: "already-current" };
+    // Local commits are worth a bounded walk back through older candidates, never the
+    // update itself: past that, the upstream commits still qualify without them, newest first.
+    let pending = candidates;
+    const replayAttempted: string[] = [];
+    let replayConflicted = false;
+    const abandonReplay = async (reason: string) => {
+      await reportLocalReplayWarning(step("preflight-local-replay"), rebaseFrom!, reason);
+      rebaseFrom = undefined;
+      replayConflicted = false;
+      pending = [...replayAttempted, ...pending];
+    };
+    while (pending.length > 0 || replayConflicted) {
+      if (pending.length === 0) {
+        await abandonReplay("it conflicts with a candidate");
       }
+      const sha = pending[0]!;
+      if (canSkipActivation && sha === params.beforeSha) {
+        if (!replayConflicted) {
+          return { status: "skipped", reason: "already-current" };
+        }
+        await abandonReplay("it conflicts with a newer candidate");
+        continue;
+      }
+      if (rebaseFrom && !params.referenceSource) {
+        const obstacle = await readLocalReplayObstacle(params, rebaseFrom, sha);
+        if (obstacle) {
+          await abandonReplay(obstacle);
+          continue;
+        }
+      }
+      pending = pending.slice(1);
       if (sha !== preflightBaseSha) {
         if (!(await checkNodeRuntime(sha))) {
           continue;
@@ -635,6 +655,20 @@ export async function runGitCandidatePreflight(params: {
       if (candidate.status === "ok" || candidate.status === "insufficient-space") {
         tested = candidate;
         break;
+      }
+      // A local commit can fail validation too, so its upstream commit stays eligible.
+      replayAttempted.push(sha);
+      if (candidate.status === "replay-failed") {
+        tested = { status: "failed" };
+        if (candidate.ending === "interrupted") {
+          break;
+        }
+        replayConflicted = true;
+        if (candidate.ending === "expired") {
+          // Older candidates would spend the same deadline on the same local history.
+          await abandonReplay(`rebase exceeded its deadline on ${sha}`);
+        }
+        continue;
       }
       // Preserve build failures over manager failures, and manager failures over
       // runtime-only rejection when a compatible candidate was attempted.
@@ -692,5 +726,6 @@ export async function runGitCandidatePreflight(params: {
     candidateSha: tested.candidateSha,
     selectedDevUpstream,
     localDevBranchExists,
+    replayedLocalSha: rebaseFrom ?? null,
   };
 }
