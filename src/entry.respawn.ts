@@ -5,7 +5,6 @@ import { isStandaloneRuntimeExecutable, resolveOpenClawCliRespawn } from "../cli
 import { resolveNodeStartupTlsEnvironment } from "./bootstrap/node-startup-env.js";
 import {
   isTerminalInteractiveRespawnArgv,
-  resolveRespawnSignalExitGraceMs,
   shouldSkipRespawnForArgv,
   shouldSkipStartupEnvironmentRespawnForArgv,
 } from "./cli/respawn-policy.js";
@@ -23,7 +22,6 @@ type CliRespawnPlan = {
   argv: string[];
   env: NodeJS.ProcessEnv;
   detachForProcessTree: boolean;
-  signalExitGraceMs?: number;
 };
 
 type CliRespawnErrorWriter = (message: string, error?: unknown) => void | Promise<void>;
@@ -149,7 +147,6 @@ export function buildCliRespawnPlan(
     argv: child.args,
     env: child.env,
     detachForProcessTree: platform !== "win32" && !isTerminalInteractiveRespawnArgv(argv),
-    signalExitGraceMs: resolveRespawnSignalExitGraceMs(normalizedArgv),
   };
 }
 
@@ -162,7 +159,6 @@ export async function runCliRespawnPlan(
     args: plan.argv,
     env: plan.env,
     detachForProcessTree: plan.detachForProcessTree,
-    signalExitGraceMs: plan.signalExitGraceMs,
     onError: (error) =>
       writeError(
         "[openclaw] Failed to respawn CLI:",

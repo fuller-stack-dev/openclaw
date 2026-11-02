@@ -49,10 +49,7 @@ export async function inspectOwnedSourceUpdateArtifacts(
   return !prepared?.changed;
 }
 
-export async function inspectSourceUpdateArtifacts(
-  rootDir: string,
-  options: { waitMs?: number; signal?: AbortSignal; onRecovered?: (message: string) => void } = {},
-): Promise<{
+export async function inspectSourceUpdateArtifacts(rootDir: string): Promise<{
   sourceRuntimePrepared: boolean;
   lock: FileLockHandle | undefined;
 }> {
@@ -60,12 +57,7 @@ export async function inspectSourceUpdateArtifacts(
     return { sourceRuntimePrepared: true, lock: undefined };
   }
   const root = fs.realpathSync(rootDir);
-  const lock = await acquireDistArtifactOwnership(
-    root,
-    options.waitMs === undefined ? false : { timeoutMs: options.waitMs },
-    options.signal,
-    options.onRecovered,
-  );
+  const lock = await acquireDistArtifactOwnership(root);
   try {
     return { sourceRuntimePrepared: await inspectOwnedSourceUpdateArtifacts(root), lock };
   } catch (error) {

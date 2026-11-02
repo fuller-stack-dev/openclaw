@@ -12,8 +12,6 @@ export function runRespawnChildWithSignalBridge(params: {
   args: string[];
   env: NodeJS.ProcessEnv;
   detachForProcessTree?: boolean;
-  /** Commands that own a longer signal drain than the generic wrapper allows. */
-  signalExitGraceMs?: number;
   onError: (error: unknown) => void | Promise<void>;
 }): Promise<number> {
   const { command, args, env, onError } = params;
@@ -66,7 +64,7 @@ export function runRespawnChildWithSignalBridge(params: {
         signalChild("SIGKILL");
       }, RESPAWN_SIGNAL_FORCE_KILL_GRACE_MS);
       signalForceKillTimer.unref?.();
-    }, params.signalExitGraceMs ?? RESPAWN_SIGNAL_EXIT_GRACE_MS);
+    }, RESPAWN_SIGNAL_EXIT_GRACE_MS);
     signalExitTimer.unref?.();
   };
 

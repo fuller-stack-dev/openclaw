@@ -1,21 +1,25 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as fileLock from "@openclaw/fs-safe/file-lock";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acquireDistArtifactOwnership,
-  DistArtifactOwnershipBusyError,
   resolveDistArtifactLockPath,
   withDistArtifactOwnership,
 } from "../../scripts/lib/dist-artifact-lock.mts";
-import { parseLinuxProcStat } from "../../scripts/lib/dist-artifact-owner-census.mts";
+import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
+import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import { waitForDead } from "../helpers/process-wait.js";
 import { createDeferred } from "../helpers/promise.js";
+
+const lockModule = pathToFileURL(path.resolve("scripts/lib/dist-artifact-lock.mts")).href;
+const managedModule = pathToFileURL(path.resolve("scripts/lib/managed-child-process.mts")).href;
 
 vi.mock("@openclaw/fs-safe/file-lock", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@openclaw/fs-safe/file-lock")>()),
@@ -39,25 +43,25 @@ beforeEach(() => {
   controller = new AbortController();
 });
 const fixture = createFixtureLifetime();
-const lockModule = pathToFileURL(path.resolve("scripts/lib/dist-artifact-lock.mts")).href;
-const ownedPids = new Set<number>();
 afterEach(async () => {
   vi.restoreAllMocks();
-  const signal = AbortSignal.timeout(10_000);
-  await Promise.all(
-    [...ownedPids].map(async (pid) => {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // Already exited; the wait below still reaps our own children.
-      }
-      await waitForDead(pid, signal, "reject");
-    }),
-  );
-  ownedPids.clear();
   await fixture.cleanup();
 });
 const readOwner = () => fs.readFileSync(ownerPath, "utf8");
+const lockFile = (name: string) => path.join(path.dirname(ownerPath), name);
+/** A refusal names the owner, what was not verified, and the one command that clears it. */
+async function expectRecoverableRefusal(attempt: Promise<unknown>, unverified: string) {
+  const failure = await attempt.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  const message = failure instanceof Error ? failure.message : String(failure);
+  const directory = path.dirname(ownerPath);
+  expect(message).toContain(`Could not acquire ${directory}: retained by PID`);
+  expect(message).toContain(`Not verified: ${unverified}`);
+  expect(message).toContain(`rm -rf -- '${directory}'`);
+  return message;
+}
 
 it("waits for an empty ownership record being published before acquiring", async () => {
   fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
@@ -77,6 +81,25 @@ it("waits for an empty ownership record being published before acquiring", async
   expect(callback).toHaveBeenCalledOnce();
   expect(fs.existsSync(ownerPath)).toBe(false);
 });
+
+it.for([false, true])(
+  "refuses an abandoned empty record with its recovery command (unjoined=%s)",
+  async (unjoined) => {
+    fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
+    fs.writeFileSync(ownerPath, "");
+    if (unjoined) {
+      fs.writeFileSync(lockFile("unjoined"), "Unverified child cleanup.\n");
+    }
+    // Past fs-safe's publication grace, nothing identifies a writer.
+    fs.utimesSync(ownerPath, new Date(0), new Date(0));
+    await expectRecoverableRefusal(
+      withDistArtifactOwnership(root, callback, controller.signal),
+      "owner.json is not a readable owner record",
+    );
+    expect(callback).not.toHaveBeenCalled();
+    expect(readOwner()).toBe("");
+  },
+);
 
 it("cancels an already contended same-process waiter without disturbing the owner", async () => {
   const enteredOwner = createDeferred();
@@ -195,18 +218,30 @@ it("keeps the published two-argument wait inside one native acquisition", async 
 });
 
 describe("retained records from interrupted owners", () => {
-  const nodeProcess = (
-    script: string,
-    args: string[],
-    cwd = root,
-    env: NodeJS.ProcessEnv = process.env,
-  ) => {
-    const child = spawn(resolveTestNodeExecPath(), ["--input-type=module", "-e", script, ...args], {
-      cwd,
+  const ownedGroups = new Set<number>();
+  afterEach(async () => {
+    const signal = AbortSignal.timeout(10_000);
+    await Promise.all(
+      [...ownedGroups].map(async (pid) => {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // The group already exited; the wait below confirms its leader is gone.
+        }
+        await waitForDead(pid, signal, "reject");
+      }),
+    );
+    ownedGroups.clear();
+  });
+  const node = (script: string, env: NodeJS.ProcessEnv = process.env) => {
+    // Own process group, as a build launched from a shell or an update launcher has.
+    const child = spawn(resolveTestNodeExecPath(), ["--input-type=module", "-e", script], {
+      cwd: root,
+      detached: true,
       env,
       stdio: ["ignore", "pipe", "inherit"],
     });
-    ownedPids.add(child.pid!);
+    ownedGroups.add(child.pid!);
     return child;
   };
   const firstLine = async (child: ChildProcess) => {
@@ -220,282 +255,286 @@ describe("retained records from interrupted owners", () => {
     child.kill("SIGKILL");
     await closed;
   };
-  /** A process that takes real ownership, and optionally leaves a detached descendant. */
-  const startHolder = async (descendantCwd?: string) => {
-    const holder = nodeProcess(
-      `import { spawn } from "node:child_process";
-      import { acquireDistArtifactOwnership } from ${JSON.stringify(lockModule)};
-      await acquireDistArtifactOwnership(${JSON.stringify(root)});
-      const descendant = process.argv[1]
-        ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-            cwd: process.argv[1], detached: true, stdio: "ignore",
-          })
-        : undefined;
-      descendant?.unref();
-      console.log(JSON.stringify({ descendant: descendant?.pid }));
-      setInterval(() => {}, 1000);`,
-      descendantCwd ? [descendantCwd] : [],
-    );
-    const { descendant } = JSON.parse(await firstLine(holder)) as { descendant?: number };
-    if (descendant) {
-      ownedPids.add(descendant);
-    }
-    return { holder, descendant };
-  };
-  const unrelatedProcess = async () => {
-    const child = nodeProcess(`console.log("ready"); setInterval(() => {}, 1000);`, []);
-    await firstLine(child);
-    return child;
-  };
   const deadPid = async () => {
-    const child = nodeProcess("", []);
+    const child = node("");
     await exited(child);
     return child.pid!;
   };
-  const writeOwner = (content: string) => {
-    fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
-    fs.writeFileSync(ownerPath, content);
-  };
-  const lockFile = (name: string) => path.join(path.dirname(ownerPath), name);
-  const readToken = () => (JSON.parse(readOwner()) as { token: string }).token;
-  const expectBusy = async () => {
-    const before = readOwner();
-    const failure = await acquireDistArtifactOwnership(root, { timeoutMs: 600 }).catch(
-      (error: unknown) => error,
+  /** Takes real ownership and optionally starts a managed, detached child, then idles. */
+  const startHolder = async (child?: { bin: string; args: string[]; readyFile: string }) => {
+    // A killed holder never releases its child's resource claim, so give it a private owner
+    // instead of the Vitest worker's namespace.
+    const resources = path.join(root, "holder-tmp");
+    fs.mkdirSync(resources);
+    createVitestResourceOwner(resources);
+    const holder = node(
+      `import fs from "node:fs";
+      import { acquireDistArtifactOwnership } from ${JSON.stringify(lockModule)};
+      import { runManagedCommand } from ${JSON.stringify(managedModule)};
+      await acquireDistArtifactOwnership(${JSON.stringify(root)});
+      const child = ${JSON.stringify(child ?? null)};
+      if (child) {
+        void runManagedCommand({ bin: child.bin, args: child.args, stdio: "ignore" }).catch(() => {});
+        while (!fs.existsSync(child.readyFile)) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      console.log("held");
+      setInterval(() => {}, 1000);`,
+      { ...process.env, TMPDIR: resources, TMP: resources, TEMP: resources },
     );
-    expect(failure).toBeInstanceOf(DistArtifactOwnershipBusyError);
-    const { message } = failure as Error;
-    expect(message).toContain("no manual removal is needed");
-    expect(message).not.toMatch(/rm -rf|Remove-Item/u);
-    expect(readOwner()).toBe(before);
-    return message;
+    expect(await firstLine(holder)).toBe("held");
+    const groups = fs
+      .readdirSync(path.dirname(ownerPath))
+      .flatMap((name) => /^group-(\d+)$/u.exec(name)?.[1] ?? [])
+      .map(Number);
+    for (const group of groups) {
+      ownedGroups.add(group);
+    }
+    return { holder, groups };
+  };
+  const writeRecord = (record: Record<string, unknown>) => {
+    fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
+    fs.writeFileSync(ownerPath, JSON.stringify(record));
   };
   const expectRecovered = async () => {
-    const onRecovered = vi.fn();
-    const lock = await acquireDistArtifactOwnership(root, false, undefined, onRecovered);
-    expect(onRecovered).toHaveBeenCalledOnce();
-    expect(JSON.parse(readOwner())).toMatchObject({ pid: process.pid });
+    const lock = await acquireDistArtifactOwnership(root);
+    expect(JSON.parse(readOwner())).toMatchObject({ pid: process.pid, host: os.hostname() });
     await lock.release();
     expect(fs.existsSync(ownerPath)).toBe(false);
   };
+  const expectHeldBy = async (detail: string) => {
+    const before = readOwner();
+    await expect(acquireDistArtifactOwnership(root)).rejects.toThrow(detail);
+    expect(readOwner()).toBe(before);
+  };
+  const currentRecord = async (overrides: Record<string, unknown> = {}) => {
+    const pid = await deadPid();
+    const now = new Date();
+    return {
+      version: 2,
+      pid,
+      pgid: pid,
+      startedAt: now.toISOString(),
+      startIdentity: now.toISOString(),
+      host: os.hostname(),
+      ...overrides,
+    };
+  };
 
-  it("recovers from a SIGKILLed holder without waiting or operator action", async () => {
+  it("recovers a SIGKILLed owner once its process, group and children are verifiably gone", async () => {
     const { holder } = await startHolder();
     await sigkill(holder);
-    const startedAt = performance.now();
     await expectRecovered();
-    expect(performance.now() - startedAt).toBeLessThan(5_000);
-    expect(process.env.OPENCLAW_DIST_ARTIFACT_OWNERS).toBeUndefined();
   });
 
-  it.for([
-    {
-      name: "the recorded incident shape",
-      record: (pid: number) => JSON.stringify({ pid, startedAt: new Date().toISOString() }),
+  it("keeps ownership while a recorded detached child outlives its owner", async () => {
+    const ready = path.join(root, "child.ready");
+    const { holder, groups } = await startHolder({
+      bin: resolveTestNodeExecPath(),
+      args: [
+        "-e",
+        `require("fs").writeFileSync(${JSON.stringify(ready)}, ""); setInterval(() => {}, 1000)`,
+      ],
+      readyFile: ready,
+    });
+    expect(groups).toHaveLength(1);
+    await sigkill(holder);
+    await expectHeldBy(`process group ${groups[0]} still has a live process or thread`);
+    process.kill(-groups[0]!, "SIGKILL");
+    await waitForDead(groups[0]!, AbortSignal.timeout(5_000), "reject");
+    await expectRecovered();
+  });
+
+  // Root cause of the reviewed counterexample: a native writer's leader called pthread_exit,
+  // so /proc shows it as Z while a sibling thread keeps writing. Leader state is not death.
+  it.runIf(process.platform === "linux")(
+    "keeps ownership while a zombie group leader's sibling thread still writes",
+    async () => {
+      const output = path.join(root, "writer.out");
+      const writer = path.join(root, "writer.py");
+      fs.writeFileSync(
+        writer,
+        [
+          "import ctypes, sys, threading, time",
+          "def write():",
+          "    while True:",
+          "        with open(sys.argv[1], 'a') as out:",
+          "            out.write('x')",
+          "        time.sleep(0.02)",
+          "threading.Thread(target=write).start()",
+          "time.sleep(0.2)",
+          "ctypes.CDLL(None).pthread_exit(None)",
+        ].join("\n"),
+      );
+      const { holder, groups } = await startHolder({
+        bin: "python3",
+        args: [writer, output],
+        readyFile: output,
+      });
+      const leader = groups[0]!;
+      await vi.waitFor(
+        () => expect(fs.readFileSync(`/proc/${leader}/stat`, "utf8")).toMatch(/\) Z /u),
+        { timeout: 5_000, interval: 20 },
+      );
+      await sigkill(holder);
+      await expectHeldBy(`process group ${leader} still has a live process or thread`);
+      const written = fs.statSync(output).size;
+      await vi.waitFor(() => expect(fs.statSync(output).size).toBeGreaterThan(written), {
+        timeout: 5_000,
+        interval: 20,
+      });
     },
-    { name: "an unparseable record", record: () => "{" },
-    { name: "an out-of-range PID", record: () => '{"pid":2147483648}' },
-    { name: "an abandoned empty record", record: () => "" },
-  ])("recovers $name and retires its markers", async ({ record }) => {
-    const pid = await deadPid();
-    writeOwner(record(pid));
-    fs.utimesSync(ownerPath, new Date(0), new Date(0));
-    fs.writeFileSync(lockFile("unjoined"), "Unverified child cleanup.\n");
-    fs.writeFileSync(lockFile(`child-${pid}`), "Awaiting child completion.\n");
-    await withDistArtifactOwnership(root, callback);
-    expect(callback).toHaveBeenCalledOnce();
-    // A retained marker would make this release keep the lock for the next run.
-    expect(fs.readdirSync(path.dirname(ownerPath))).toEqual([]);
+  );
+
+  it("never takes ownership from a running owner", async () => {
+    const { holder } = await startHolder();
+    await expectHeldBy(`PID ${holder.pid} is still running`);
+    expect(holder.exitCode).toBeNull();
   });
 
-  it("does not let an abandoned reclaim guard block recovery", async () => {
-    const pid = await deadPid();
-    writeOwner(JSON.stringify({ pid, startedAt: new Date().toISOString() }));
-    fs.writeFileSync(`${ownerPath}.reclaim`, JSON.stringify({ pid }));
+  it("treats a recorded PID that now names a newer process as a dead owner", async () => {
+    const unrelated = node(`console.log("ready"); setInterval(() => {}, 1000);`);
+    await firstLine(unrelated);
+    const lastHour = new Date(Date.now() - 3_600_000).toISOString();
+    writeRecord(
+      await currentRecord({ pid: unrelated.pid, startedAt: lastHour, startIdentity: lastHour }),
+    );
+    await expectRecovered();
+    expect(unrelated.exitCode).toBeNull();
+  });
+
+  it("refuses a record from another host, however old", async () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    writeRecord(
+      await currentRecord({ host: "build-peer", startedAt: twoDaysAgo, startIdentity: twoDaysAgo }),
+    );
+    const message = await expectRecoverableRefusal(
+      acquireDistArtifactOwnership(root),
+      `the owner ran on host build-peer, whose processes cannot be observed from ${os.hostname()}`,
+    );
+    expect(message).toContain(`on host "build-peer", started "${twoDaysAgo}"`);
+  });
+
+  it("refuses when a child was starting as the owner stopped", async () => {
+    writeRecord(await currentRecord());
+    fs.writeFileSync(lockFile("spawning-123-1"), "");
+    await expectRecoverableRefusal(
+      acquireDistArtifactOwnership(root),
+      "a child was starting when the owner stopped, so its group was not recorded",
+    );
+  });
+
+  // Acquire in a child whose ps is missing (empty PATH) or denied (macOS sandbox profile).
+  const acquireWhere = async (ps: "missing" | "denied") => {
+    const script = `import { acquireDistArtifactOwnership } from ${JSON.stringify(lockModule)};
+      await acquireDistArtifactOwnership(${JSON.stringify(root)}).then(
+        (lock) => lock.release().then(() => console.log(JSON.stringify("acquired"))),
+        (error) => console.log(JSON.stringify(error.message)),
+      );`;
+    const args = ["--input-type=module", "-e", script];
+    const attempt =
+      ps === "denied"
+        ? spawn(
+            "/usr/bin/sandbox-exec",
+            [
+              "-p",
+              '(version 1)(allow default)(deny process-exec (literal "/bin/ps"))',
+              resolveTestNodeExecPath(),
+              ...args,
+            ],
+            { cwd: root, stdio: ["ignore", "pipe", "inherit"] },
+          )
+        : spawn(resolveTestNodeExecPath(), args, {
+            cwd: root,
+            env: { ...process.env, PATH: "/nonexistent" },
+            stdio: ["ignore", "pipe", "inherit"],
+          });
+    const outcome = JSON.parse(await firstLine(attempt)) as string;
+    await exited(attempt);
+    return outcome;
+  };
+  const psCases = [
+    "missing",
+    ...(process.platform === "darwin" ? (["denied"] as const) : []),
+  ] as const;
+
+  // The reviewed gap: without ps, a dead owner's detached child went unchecked.
+  it.each(psCases)("keeps ownership for a live detached child when ps is %s", async (ps) => {
+    const ready = path.join(root, "child.ready");
+    const { holder, groups } = await startHolder({
+      bin: resolveTestNodeExecPath(),
+      args: [
+        "-e",
+        `require("fs").writeFileSync(${JSON.stringify(ready)}, ""); setInterval(() => {}, 1000)`,
+      ],
+      readyFile: ready,
+    });
+    await sigkill(holder);
+    const before = readOwner();
+    expect(await acquireWhere(ps)).toContain(
+      `process group ${groups[0]} still has a live process or thread`,
+    );
+    expect(readOwner()).toBe(before);
+  });
+
+  // Linux reads start times from /proc, so only platforms that need ps can lose them.
+  it.runIf(process.platform !== "linux").each(psCases)(
+    "refuses an owner whose start time cannot be read when ps is %s",
+    async (ps) => {
+      const unrelated = node(`console.log("ready"); setInterval(() => {}, 1000);`);
+      await firstLine(unrelated);
+      const lastHour = new Date(Date.now() - 3_600_000).toISOString();
+      writeRecord(
+        await currentRecord({ pid: unrelated.pid, startedAt: lastHour, startIdentity: lastHour }),
+      );
+      await expectRecoverableRefusal(
+        Promise.reject(new Error(await acquireWhere(ps))),
+        `the start time of PID ${unrelated.pid} could not be read`,
+      );
+      expect(unrelated.exitCode).toBeNull();
+    },
+  );
+
+  // A record in the shape current main writes, as an interrupted update leaves it.
+  it("keeps the earlier record format's contract", async () => {
+    const { holder } = await startHolder();
+    const running = holder.pid!;
+    const legacy = JSON.stringify({ pid: running, startedAt: new Date().toISOString() });
+    fs.writeFileSync(ownerPath, legacy);
+    await expectHeldBy(`PID ${running} is still running`);
+    await sigkill(holder);
+    const message = await expectRecoverableRefusal(
+      acquireDistArtifactOwnership(root),
+      "the record predates owner identity, so its process start, group and children cannot be checked",
+    );
+    expect(message).toContain(`retained by PID ${running} on host "unknown"`);
+    expect(readOwner()).toBe(legacy);
+  });
+
+  it("removes a kernel-confirmed abandoned reclaim guard", async () => {
+    writeRecord(await currentRecord());
+    fs.writeFileSync(`${ownerPath}.reclaim`, JSON.stringify({ pid: await deadPid() }));
     await expectRecovered();
     expect(fs.existsSync(`${ownerPath}.reclaim`)).toBe(false);
   });
 
-  it("never steals from a live holder and reports bounded progress", async () => {
-    const { holder } = await startHolder();
-    const progress = vi.spyOn(console, "error").mockImplementation(() => {});
-    const message = await expectBusy();
-    expect(message).toContain(`retained by PID ${holder.pid}`);
-    expect(message).toContain("is still running");
-    expect(progress).toHaveBeenCalledWith(
-      expect.stringContaining("waiting for checkout ownership"),
-    );
-    expect(holder.exitCode).toBeNull();
-    await sigkill(holder);
-    await expectRecovered();
-  });
-
-  it.for([
-    { name: "with a start identity", identity: true },
-    { name: "without a start identity", identity: false },
-  ])("treats a reused PID as a dead owner $name", async ({ identity }) => {
-    const unrelated = await unrelatedProcess();
-    const lastHour = new Date(Date.now() - 3_600_000).toISOString();
-    writeOwner(
-      JSON.stringify({
-        pid: unrelated.pid,
-        startedAt: lastHour,
-        ...(identity ? { startIdentity: lastHour } : {}),
-      }),
-    );
-    await expectRecovered();
-    expect(unrelated.exitCode).toBeNull();
-    expect(unrelated.signalCode).toBeNull();
-  });
-
-  it("holds ownership for a detached descendant that outlives its owner", async () => {
-    const { holder, descendant } = await startHolder(path.dirname(root));
-    await sigkill(holder);
-    // Its cwd is outside the checkout, so only inherited owner identity can find it.
-    expect(await expectBusy()).toContain(`descendant PIDs ${descendant}`);
-    process.kill(descendant!, "SIGKILL");
-    await waitForDead(descendant!, AbortSignal.timeout(5_000), "reject");
-    await expectRecovered();
-  });
-
-  it.runIf(process.platform === "darwin")(
-    "finds an orphan working in the checkout when the record predates owner tokens",
-    async () => {
-      const { holder, descendant } = await startHolder(root);
-      await sigkill(holder);
-      const { pid, startedAt } = JSON.parse(readOwner()) as { pid: number; startedAt: string };
-      writeOwner(JSON.stringify({ pid, startedAt }));
-      expect(await expectBusy()).toContain(`descendant PIDs ${descendant}`);
-      process.kill(descendant!, "SIGKILL");
-      await waitForDead(descendant!, AbortSignal.timeout(5_000), "reject");
-      await expectRecovered();
-    },
-  );
-
-  it.for([
-    { name: "holds for a member started under the record", recordedAgoMs: 60_000, held: true },
-    { name: "ignores a member older than the record", recordedAgoMs: -60_000, held: false },
-  ])("checks the recorded process group: $name", async ({ recordedAgoMs, held }) => {
-    const leader = spawn(resolveTestNodeExecPath(), ["-e", "setInterval(() => {}, 1000)"], {
-      cwd: path.dirname(root),
-      detached: true,
-      stdio: "ignore",
-    });
-    ownedPids.add(leader.pid!);
-    writeOwner(
-      JSON.stringify({
-        pid: await deadPid(),
-        pgid: leader.pid,
-        startedAt: new Date(Date.now() - recordedAgoMs).toISOString(),
-      }),
-    );
-    if (held) {
-      expect(await expectBusy()).toContain(`descendant PIDs ${leader.pid}`);
-    } else {
-      await expectRecovered();
-    }
-    expect(leader.exitCode).toBeNull();
-  });
-
-  it("holds ownership while a child entry claim is live", async () => {
-    const claimant = await unrelatedProcess();
-    const pid = await deadPid();
-    writeOwner(JSON.stringify({ pid, startedAt: new Date().toISOString() }));
-    fs.writeFileSync(lockFile(`child-${claimant.pid}`), "Awaiting child completion.\n");
-    expect(await expectBusy()).toContain(`child PIDs ${claimant.pid}`);
-    await sigkill(claimant);
-    await expectRecovered();
-    expect(fs.existsSync(lockFile(`child-${claimant.pid}`))).toBe(false);
-  });
-
-  it("never mistakes a directory named gateway for a Gateway it may ignore", async () => {
-    const { holder, descendant } = await startHolder(path.dirname(root));
-    await sigkill(holder);
-    const named = path.join(root, "gateway", "compiler.mjs");
-    fs.mkdirSync(path.dirname(named));
-    fs.writeFileSync(named, "setInterval(() => {}, 1000);");
-    const lookalike = spawn(resolveTestNodeExecPath(), [named], {
-      detached: true,
-      stdio: "ignore",
-      env: { ...process.env, OPENCLAW_DIST_ARTIFACT_OWNERS: readToken() },
-    });
-    ownedPids.add(lookalike.pid!);
-    process.kill(descendant!, "SIGKILL");
-    await waitForDead(descendant!, AbortSignal.timeout(5_000), "reject");
-    expect(await expectBusy()).toContain(`descendant PIDs ${lookalike.pid}`);
-  });
-
-  it("ignores a real Gateway that outlived the build which started it", async () => {
-    const { holder, descendant } = await startHolder(path.dirname(root));
-    await sigkill(holder);
-    // argv[1] is the gateway subcommand; node -e leaves it in the visible command line.
-    const gateway = spawn(
-      resolveTestNodeExecPath(),
-      ["-e", "setInterval(() => {}, 1000)", "gateway", "run"],
-      {
-        detached: true,
+  it("drops a managed child's group record once that group has exited", async () => {
+    await withDistArtifactOwnership(root, async () => {
+      await runManagedCommand({
+        bin: resolveTestNodeExecPath(),
+        args: ["-e", ""],
         stdio: "ignore",
-        env: { ...process.env, OPENCLAW_DIST_ARTIFACT_OWNERS: readToken() },
-      },
-    );
-    ownedPids.add(gateway.pid!);
-    process.kill(descendant!, "SIGKILL");
-    await waitForDead(descendant!, AbortSignal.timeout(5_000), "reject");
-    await expectRecovered();
-    expect(gateway.exitCode).toBeNull();
-  });
-
-  // Where ps cannot run: Linux never needs it, other platforms warn that they checked less.
-  const acquireWithoutPs = (expected: string) =>
-    nodeProcess(
-      `import { acquireDistArtifactOwnership } from ${JSON.stringify(lockModule)};
-      const outcome = await acquireDistArtifactOwnership(${JSON.stringify(root)})
-        .then((lock) => lock.release().then(() => "acquired"), (error) => String(error));
-      console.log(outcome.startsWith(${JSON.stringify(expected)}) ? "matched" : outcome);`,
-      [],
-      root,
-      { PATH: "/nonexistent" },
-    );
-
-  it("recovers a dead owner when ps cannot run", async () => {
-    writeOwner(JSON.stringify({ pid: await deadPid(), startedAt: new Date().toISOString() }));
-    expect(await firstLine(acquireWithoutPs("acquired"))).toBe("matched");
-    expect(fs.existsSync(ownerPath)).toBe(false);
-  });
-
-  it("does not steal from a live owner when ps cannot run", async () => {
-    const { holder } = await startHolder();
-    expect(await firstLine(acquireWithoutPs("DistArtifactOwnershipBusyError"))).toBe("matched");
-    expect(holder.exitCode).toBeNull();
-    expect(JSON.parse(readOwner())).toMatchObject({ pid: holder.pid });
-  });
-
-  it.runIf(process.platform === "linux")(
-    "finds a surviving descendant through /proc when ps cannot run",
-    async () => {
-      const { holder } = await startHolder(path.dirname(root));
-      await sigkill(holder);
-      expect(await firstLine(acquireWithoutPs("DistArtifactOwnershipBusyError"))).toBe("matched");
-    },
-  );
-
-  it("parses Linux process facts around a hostile command name", () => {
-    const stat = "4242 (node (a) b) S 1 77 77 0 -1 4194304 1 0 0 0 1 1 0 0 20 0 1 0 500 0 0 0";
-    expect(parseLinuxProcStat(4242, stat, 1_000_000)).toEqual({
-      pid: 4242,
-      ppid: 1,
-      pgid: 77,
-      state: "S",
-      startMs: 1_005_000,
+      });
     });
+    // A leftover record would have retained the lock for every later acquirer.
+    expect(fs.readdirSync(path.dirname(ownerPath))).toEqual([]);
   });
 
   it("admits one owner at a time when several processes recover the same record", async () => {
     const { holder } = await startHolder();
     await sigkill(holder);
     const log = path.join(root, "owners.log");
-    const contender = () =>
-      nodeProcess(
+    const contenders = Array.from({ length: 3 }, () =>
+      node(
         `import fs from "node:fs";
         import { withDistArtifactOwnership } from ${JSON.stringify(lockModule)};
         await withDistArtifactOwnership(${JSON.stringify(root)}, async () => {
@@ -503,9 +542,8 @@ describe("retained records from interrupted owners", () => {
           await new Promise((resolve) => setTimeout(resolve, 100));
           fs.appendFileSync(${JSON.stringify(log)}, "exit\\n");
         });`,
-        [],
-      );
-    const contenders = [contender(), contender(), contender()];
+      ),
+    );
     await Promise.all(contenders.map(exited));
     expect(contenders.map((child) => child.exitCode)).toEqual([0, 0, 0]);
     expect(fs.readFileSync(log, "utf8").trim().split("\n")).toEqual([
@@ -516,6 +554,5 @@ describe("retained records from interrupted owners", () => {
       "enter",
       "exit",
     ]);
-    expect(fs.existsSync(ownerPath)).toBe(false);
   });
 });

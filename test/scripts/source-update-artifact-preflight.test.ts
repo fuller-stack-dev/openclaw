@@ -10,7 +10,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const lockFile = ".artifacts/dist-artifacts.lock/owner.json";
 const stager = "scripts/stage-bundled-plugin-runtime.mts";
 const ownerRecord = (pid = process.pid) =>
-  JSON.stringify({ pid, startedAt: new Date().toISOString() });
+  JSON.stringify({ pid, startedAt: "2026-09-24T12:00:00.000Z" });
 
 function installedCheckout() {
   // Keep host service discovery outside this installed-artifact ownership fixture.
@@ -57,23 +57,16 @@ function installedCheckout() {
 }
 
 describe("published source updater candidate-build preflight", () => {
-  it("recovers a dead owner before candidate work without an operator", async () => {
-    const f = installedCheckout();
-    f.write(lockFile, ownerRecord(2147483647));
-    expect((await f.run()).exitCode).toBe(0);
-    expect(f.runStep).toHaveBeenCalledOnce();
-    expect(f.owner()).toBeUndefined();
-    f.expectPreserved();
-  });
-  it.each(["live owner", "symlink", "invalid writer"])(
+  it.each(["dead owner", "live owner", "symlink", "invalid writer"])(
     "refuses %s before candidate work and preserves serving artifacts",
     async (hazard) => {
       const f = installedCheckout();
-      const owner = ownerRecord();
+      const pid = hazard === "dead owner" ? 2147483647 : process.pid;
+      const owner = ownerRecord(pid);
       let error: string;
-      if (hazard === "live owner") {
+      if (hazard.endsWith("owner")) {
         f.write(lockFile, owner);
-        error = `retained by PID ${process.pid}`;
+        error = `retained by PID ${pid}`;
       } else if (hazard === "symlink") {
         const liveRoot = path.join(f.root, "serving-runtime");
         fs.renameSync(path.join(f.root, "dist-runtime"), liveRoot);
@@ -87,8 +80,8 @@ describe("published source updater candidate-build preflight", () => {
       }
       await expect(f.run()).rejects.toThrow(error);
       expect(f.runStep).not.toHaveBeenCalled();
-      expect(f.owner()).toBe(hazard === "live owner" ? owner : undefined);
-      if (hazard === "live owner") {
+      expect(f.owner()).toBe(hazard.endsWith("owner") ? owner : undefined);
+      if (hazard.endsWith("owner")) {
         expect(liveGatewayDistFence.resolveLiveManagedGatewayDistFence).not.toHaveBeenCalled();
         expect(fs.existsSync(f.env.BUILD_ALL_CACHE_ROOT)).toBe(false);
       }

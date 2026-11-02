@@ -7,6 +7,7 @@ import type {
   SpawnOptionsWithStdioTuple,
   StdioOptions,
 } from "node:child_process";
+import fs from "node:fs";
 import { Socket } from "node:net";
 import { constants as osConstants, tmpdir } from "node:os";
 import path from "node:path";
@@ -130,6 +131,55 @@ type ManagedChildStopControl = {
 };
 
 const managedChildren = new Set<(signal: NodeJS.Signals) => void>();
+/** Set while a process owns .artifacts/dist-artifacts.lock; its value is the lock directory. */
+export const DIST_ARTIFACT_LOCK_DIR_ENV = "OPENCLAW_DIST_ARTIFACT_LOCK_DIR";
+let pendingGroupClaims = 0;
+
+/**
+ * Detached children lead their own process group, so a dead artifact owner's group no longer
+ * covers them. Record each group in the lock directory before it can write, and keep the
+ * record until the group is verifiably gone; recovery checks every recorded group.
+ */
+function openDistArtifactGroupClaim(env: NodeJS.ProcessEnv, platform: NodeJS.Platform) {
+  const directory = env[DIST_ARTIFACT_LOCK_DIR_ENV] ?? process.env[DIST_ARTIFACT_LOCK_DIR_ENV];
+  if (!directory || platform === "win32") {
+    return undefined;
+  }
+  // An owner killed between spawn and the group record leaves this marker, which recovery
+  // treats as unverified rather than as a child that never started.
+  const pending = path.join(directory, `spawning-${process.pid}-${++pendingGroupClaims}`);
+  try {
+    fs.writeFileSync(pending, "");
+  } catch (error) {
+    // An inherited directory that no longer exists has no ownership left to protect.
+    if (hasProcessErrorCode(error, "ENOENT")) {
+      return undefined;
+    }
+    throw error;
+  }
+  let claim: string | undefined;
+  return {
+    record(pid: number | undefined) {
+      if (pid === undefined) {
+        fs.rmSync(pending, { force: true });
+        return;
+      }
+      claim = path.join(directory, `group-${pid}`);
+      try {
+        fs.writeFileSync(claim, "");
+      } catch {
+        // The pending marker stays as the durable record that a group went unrecorded.
+        return;
+      }
+      fs.rmSync(pending, { force: true });
+    },
+    settle(child: ManagedProcessGroupChild) {
+      if (claim && inspectManagedProcessGroup(child, { errorPolicy: "indeterminate" }) === "dead") {
+        fs.rmSync(claim, { force: true });
+      }
+    },
+  };
+}
 const signalHandlers = new Map<NodeJS.Signals, () => void>();
 const windowsJobs = new WeakMap<object, ManagedWindowsJob>();
 const windowsTerminations = new WeakMap<object, ManagedChildTermination>();
@@ -776,6 +826,7 @@ async function runManagedCommandInner(
     releaseClaim?.();
     releaseClaim = undefined;
   };
+  const groupClaim = openDistArtifactGroupClaim(commandEnv, platform);
   // Register before spawn: a child can become ready before spawn returns.
   installSignalHandlers();
   let child: ChildProcess;
@@ -783,10 +834,12 @@ async function runManagedCommandInner(
   try {
     child = spawnManagedChild(spawnSpec.command, spawnSpec.args, spawnSpec.options);
   } catch (error) {
+    groupClaim?.record(undefined);
     removeSignalHandlersIfIdle();
     releaseOwnership();
     throw error;
   }
+  groupClaim?.record(child.pid);
   let childClosed = false;
   child.once("close", () => {
     childClosed = true;
@@ -995,6 +1048,7 @@ async function runManagedCommandInner(
     if (!child.pid) {
       releaseOwnership();
     }
+    groupClaim?.settle(child);
   }
 }
 

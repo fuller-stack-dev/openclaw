@@ -1094,19 +1094,18 @@ refusal still blocks recovery. Doctor publishes its completion result only after
 its maintenance resources have been released.
 
 Source updates also admit build-artifact ownership and runtime staging access in
-the installed checkout before stopping the Gateway. Owner records name the process
-start time, process group, host, and a token its descendants inherit, so a later
-update can tell a dead owner from a reused PID. A retained
-`.artifacts/dist-artifacts.lock` whose owner and descendants are gone is recovered
-automatically, with a warning in the run's report; this also covers older records
-with no identity, abandoned empty records, and hard kills where no handler ran.
-A live holder, or a dead owner with surviving descendants, is never stolen from.
-The update waits up to 60 seconds with visible progress, keeps preparing its
-candidate in its private worktree, and takes ownership before stopping the Gateway,
-waiting again for up to one step timeout. If the holder outlasts that wait, the
-update stops before any mutation, the current version keeps serving, and the next
-run continues; ownership never requires manual removal. Older installed updaters
-keep their refusal until they have been updated once.
+the installed checkout before stopping the Gateway. Owner records name the host,
+process start time and process group, and managed children record each detached
+process group they start. A retained `.artifacts/dist-artifacts.lock` is
+recovered automatically, with a note on stderr, only when the owner ran on this
+host, its PID is gone or now names a newer process, and its group and every
+recorded child group have no live process or thread. A running owner or child
+keeps the lock. Anything that cannot be verified refuses the update with the
+recorded owner, host, start time, what was not verified, and the exact command
+that releases it, while the serving Gateway stays running. That covers records
+written before owner identity existed, records from another host, failed reads,
+and a missing or denied `ps`. Verify that no build or check from that owner is
+still running, including detached children, before releasing the lock.
 The updater keeps that ownership until its work has settled and carries the
 prepared runtime result into completion. Already-current repairs reuse the admitted
 ownership; promoted runtime outputs do not need regeneration. Published updaters
