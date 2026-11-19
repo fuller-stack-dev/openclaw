@@ -315,7 +315,9 @@ export async function inspectManagedGatewayServiceBeforeUpdate(params: {
   return ownsRoot
     ? {
         kind: "owned",
-        root,
+        // A source checkout is its directory. A pnpm or Bun link that names it is
+        // replaced by a switch to the package, so later checks must not follow it.
+        root: layout?.entrypointSourceCheckout ? (layout.packageRootReal ?? root) : root,
         fingerprint,
         refreshDefinition: (state.definitionMutationCapability?.kind ?? "writable") === "writable",
       }
