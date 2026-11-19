@@ -180,11 +180,10 @@ export async function inspectNpmGlobalDestination(
 }
 
 /**
- * A pnpm or Bun global entry that links to this Git checkout is the checkout's own
- * `openclaw` command. This updater cannot switch it to the package: replacing the entry
- * changes what every later service ownership check names, so revalidation, rollback and
- * recovery refuse and leave the Gateway stopped, and pnpm 12.15+ launchers staged for the
- * replacement still point into the removed stage. Refuse before anything changes.
+ * A Bun global entry that links to this Git checkout is the checkout's own `openclaw`
+ * command. pnpm links switch through the native package transaction, which keeps the
+ * stopped service pinned to the checkout and restores the link on rollback; Bun's
+ * linked-checkout switch has no such proof yet, so refuse it before anything changes.
  */
 export async function inspectCheckoutLinkPackageSwitch(params: {
   checkoutRoot: string;
@@ -195,7 +194,7 @@ export async function inspectCheckoutLinkPackageSwitch(params: {
   requestedChannel: string;
 }) {
   const { manager, packageRoot } = params.installTarget;
-  if (manager === "npm" || !packageRoot) {
+  if (manager !== "bun" || !packageRoot) {
     return null;
   }
   if (!(await fs.lstat(packageRoot).catch(() => null))?.isSymbolicLink()) {
@@ -208,11 +207,10 @@ export async function inspectCheckoutLinkPackageSwitch(params: {
   if (linked !== checkout) {
     return null;
   }
-  const install = manager === "pnpm" ? "pnpm add -g" : "bun add -g --trust";
   // The owning manager writes its own link and launcher while the Gateway keeps serving
   // the checkout; the package then reinstalls the service on itself and restarts it.
   const commands = [
-    `${install} ${quoteCliArg(params.targetSpec)}`,
+    `bun add -g --trust ${quoteCliArg(params.targetSpec)}`,
     ...(params.serviceRunsCheckout
       ? ["openclaw gateway install --force", "openclaw gateway restart"].map((command) =>
           formatCliCommand(command),

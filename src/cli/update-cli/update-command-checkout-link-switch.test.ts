@@ -55,10 +55,14 @@ function pnpmTarget(packageRoot = link): ResolvedGlobalInstallTarget {
   };
 }
 
+function bunTarget(packageRoot = link): ResolvedGlobalInstallTarget {
+  return { manager: "bun", command: "bun", globalRoot, packageRoot };
+}
+
 const inspect = (overrides: Partial<Parameters<typeof inspectCheckoutLinkPackageSwitch>[0]> = {}) =>
   inspectCheckoutLinkPackageSwitch({
     checkoutRoot: link,
-    installTarget: pnpmTarget(),
+    installTarget: bunTarget(),
     serviceRunsCheckout: true,
     targetSpec: `openclaw@${TARGET}`,
     storedChannel: "beta",
@@ -108,12 +112,12 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-it("names a pnpm global link to the checkout whose Gateway runs that checkout", async () => {
+it("names a Bun global link to the checkout whose Gateway runs that checkout", async () => {
   const refusal = await inspect();
   expect(refusal).toMatchObject({
     reason: "unsupported-package-target",
     recoverySteps: [
-      { kind: "continue-update", command: `pnpm add -g openclaw@${TARGET}` },
+      { kind: "continue-update", command: `bun add -g --trust openclaw@${TARGET}` },
       { kind: "continue-update", command: "openclaw gateway install --force" },
       { kind: "continue-update", command: "openclaw gateway restart" },
     ],
@@ -125,11 +129,10 @@ it("names a pnpm global link to the checkout whose Gateway runs that checkout", 
   expect(refusal?.message).toContain("`openclaw triage`");
 });
 
-it("names Bun's installer and a channel change when the stored channel differs", async () => {
+it("names a channel change when the stored channel differs", async () => {
   const refusal = await inspect({
-    installTarget: { ...pnpmTarget(), manager: "bun", command: "bun" },
     storedChannel: "dev",
-    // The link alone is enough: staged launchers for it cannot be published safely.
+    // The link alone is enough: its switch has no rollback proof yet.
     serviceRunsCheckout: false,
   });
   expect(refusal?.recoverySteps).toEqual([
@@ -142,23 +145,25 @@ it("names Bun's installer and a channel change when the stored channel differs",
 });
 
 it.each([
+  // pnpm links switch through the native transaction, pinned to the checkout for rollback.
+  ["a pnpm link to the checkout", async () => ({ installTarget: pnpmTarget() })],
   // npm links to a checkout are restored by the npm root-link transaction.
   [
     "an npm link to the checkout",
     async () => ({ installTarget: { ...pnpmTarget(), manager: "npm" as const, command: "npm" } }),
   ],
-  // The installer's wrapper layout leaves a real package directory in the pnpm root.
+  // A real package directory in the global root is not the checkout command.
   [
-    "a pnpm package directory",
+    "a Bun package directory",
     async () => {
       const packageRoot = path.join(base, "pnpm-home", "global", "v11", "other", "openclaw");
       await writeManifest(packageRoot);
-      return { checkoutRoot: checkout, installTarget: pnpmTarget(packageRoot) };
+      return { checkoutRoot: checkout, installTarget: bunTarget(packageRoot) };
     },
   ],
   // A link to another directory belongs to another installation.
   [
-    "a pnpm link to another directory",
+    "a Bun link to another directory",
     async () => {
       const elsewhere = path.join(base, "elsewhere");
       await writeManifest(elsewhere);
@@ -186,8 +191,8 @@ it.each([true, false])(
       nodeEngine: null,
       schemaVersions: CURRENT_SCHEMA_VERSIONS,
     });
-    // Global-root discovery runs `pnpm root -g`; the fixture supplies its answer directly.
-    vi.spyOn(updateGlobal, "resolveGlobalInstallTarget").mockResolvedValue(pnpmTarget());
+    // Global-root discovery asks the manager; the fixture supplies its answer directly.
+    vi.spyOn(updateGlobal, "resolveGlobalInstallTarget").mockResolvedValue(bunTarget());
     vi.spyOn(servicePlan, "resolveManagedServicePackageUpdatePlan").mockResolvedValue({
       rootRedirect: null,
       serviceUnitTarget: path.join(checkout, "dist", "index.js"),
@@ -207,7 +212,7 @@ it.each([true, false])(
           failureFacts: [expect.objectContaining({ code: "unsupported-package-target" })],
           // Agents read the commands that finish the switch from the failed step.
           recoverySteps: [
-            { kind: "continue-update", command: `pnpm add -g openclaw@${TARGET}` },
+            { kind: "continue-update", command: `bun add -g --trust openclaw@${TARGET}` },
             { kind: "continue-update", command: "openclaw gateway install --force" },
             { kind: "continue-update", command: "openclaw gateway restart" },
           ],
@@ -215,7 +220,7 @@ it.each([true, false])(
       });
     } else {
       expect(text).toContain(`Switch to openclaw@${TARGET} not started`);
-      expect(text).toContain(`pnpm add -g openclaw@${TARGET}`);
+      expect(text).toContain(`bun add -g --trust openclaw@${TARGET}`);
       expect(text).toContain("openclaw gateway install --force");
       expect(text).toContain(
         "run `openclaw config set update.channel beta`, then `openclaw update`",
