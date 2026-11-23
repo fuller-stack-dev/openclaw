@@ -49,6 +49,7 @@ import { resolveEnvironmentValue } from "./process-env.js";
 import { throwSqliteLifecycleErrors } from "./sqlite-lifecycle-errors.js";
 import { withSqliteSnapshotReuse } from "./sqlite-snapshot-reuse.js";
 import { stopSupervisedPredecessorGateway } from "./update-candidate-predecessor-stop.js";
+import { readEarlyGitReleaseDriverStateVersions } from "./update-candidate-check-early-release.js";
 import { UPDATE_RUN_ID_ENV } from "./update-control-plane-sentinel.js";
 import { createDoctorServiceInspectionBudget } from "./update-doctor-deadline.js";
 import {
@@ -102,6 +103,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
     if (typeof finishUpdateRun !== "function") {
       throw new Error("Update recovery writer is unavailable.");
     }
+    const root = resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url });
     process.stdout.write(
       JSON.stringify({
         executorDelegation: "pid-start-v1",
@@ -114,6 +116,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
         gatewayRestartCompletion: true,
         state: OPENCLAW_STATE_SCHEMA_VERSION,
         agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+        ...(root ? readEarlyGitReleaseDriverStateVersions(root) : null),
       }),
     );
     return;
